@@ -30,17 +30,31 @@ button{font-family:var(--ui);cursor:pointer;border:none;background:none;color:in
 .marca{font-family:var(--display);font-weight:700;letter-spacing:.03em;font-size:15px;color:var(--brass)}
 .marca b{color:var(--ink)}
 .rodada{font-family:var(--mono,monospace);font-size:12px;color:var(--ink-3);margin-left:auto}
-.faixa{margin-top:6px;display:flex;align-items:center;gap:10px;padding:5px 8px;border-radius:8px;
-  border:1px solid var(--line-soft)}
-.faixa.t0{background:linear-gradient(90deg,rgba(76,155,214,.14),transparent)}
-.faixa.t1{background:linear-gradient(90deg,rgba(212,91,78,.14),transparent)}
-.quem{font-family:var(--display);font-weight:700;font-size:13px}
+.faixa{margin-top:8px;display:flex;align-items:center;gap:12px;padding:10px 12px;border-radius:8px;
+  border:1px solid var(--line-soft);background:var(--ground-2)}
+.faixa.t0{border-color:rgba(76,155,214,.3);background:linear-gradient(135deg,rgba(76,155,214,.08),rgba(76,155,214,.02))}
+.faixa.t1{border-color:rgba(212,91,78,.3);background:linear-gradient(135deg,rgba(212,91,78,.08),rgba(212,91,78,.02))}
+.quem{font-family:var(--display);font-weight:700;font-size:12px;text-transform:uppercase;letter-spacing:.05em}
 .faixa.t0 .quem{color:var(--azul-2)}
 .faixa.t1 .quem{color:var(--carmim-2)}
-.stat{margin-left:auto;display:flex;gap:12px;font-size:13px;color:var(--ink-2)}
-.stat b{color:var(--ink)}
-.icoMana{color:var(--mana)}
+.stat{margin-left:auto;display:flex;gap:20px;align-items:center;flex-shrink:0}
+.stat > span{display:flex;align-items:center;gap:6px;font-size:13px;color:var(--ink-2)}
+.stat > span b{color:var(--ink)}
+.manaPanel{display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.manaDisplay{background:linear-gradient(135deg,rgba(255,200,0,.15),rgba(255,200,0,.05));
+  border:2px solid var(--mana);border-radius:10px;padding:6px 14px;
+  display:flex;align-items:center;gap:8px;box-shadow:0 0 12px rgba(255,200,0,.2)}
+.manaIcon{font-size:17px;color:var(--mana);font-weight:900}
+.manaNum{font-size:22px;color:var(--mana);font-weight:900;font-family:var(--mono,monospace);
+  text-shadow:0 0 6px rgba(255,200,0,.35);min-width:20px;text-align:center}
 .icoBase{color:var(--brass)}
+.baseHp{position:absolute;font-family:var(--mono,monospace);font-weight:900;
+  font-size:22px;line-height:1;pointer-events:none;transform:translate(-50%,-50%);
+  text-shadow:0 0 8px rgba(0,0,0,.8);z-index:6;
+  background:rgba(0,0,0,.4);border-radius:8px;padding:5px 11px;
+  border:2px solid currentColor}
+.baseHp.t0{color:var(--azul-2);border-color:var(--azul)}
+.baseHp.t1{color:var(--carmim-2);border-color:var(--carmim)}
 
 /* ───── TABULEIRO ───── */
 #palco{position:relative;flex:1;overflow:auto;
@@ -77,7 +91,7 @@ button{font-family:var(--ui);cursor:pointer;border:none;background:none;color:in
   top:2px;right:4px}
 .hex.selecionavel{cursor:pointer}
 .hex .baseIco{font-size:18px;color:var(--brass);opacity:.9;text-shadow:0 0 8px rgba(212,162,76,.6)}
-.baseSimbolo{position:absolute;font-size:34px;line-height:1;pointer-events:none;transform:translate(-50%,-50%);text-shadow:0 0 10px rgba(0,0,0,.7);z-index:5;opacity:.85}
+.baseSimbolo{position:absolute;font-size:64px;line-height:1;pointer-events:none;transform:translate(-50%,-50%);text-shadow:0 0 14px rgba(0,0,0,.75);z-index:5;opacity:.85}
 .baseSimbolo.t0{color:#4c9bd6}
 .baseSimbolo.t1{color:#d45b4e}
 .hex.spawn{outline:2px dashed rgba(212,162,76,.6);outline-offset:-2px}
@@ -200,9 +214,11 @@ button{font-family:var(--ui);cursor:pointer;border:none;background:none;color:in
     </div>
     <div class="faixa t0" id="faixa">
       <span class="quem" id="quem">AZUL</span>
-      <div class="stat">
-        <span class="icoMana">◆ <b id="statMana">0</b></span>
-        <span class="icoBase">⌂ <b id="statBase0">0</b> / <b id="statBase1">0</b></span>
+      <div class="manaPanel">
+        <div class="manaDisplay">
+          <span class="manaIcon">◆</span>
+          <span class="manaNum" id="statMana">0</span>
+        </div>
       </div>
     </div>
   </header>
@@ -385,6 +401,48 @@ const MAPAS = {
     raio: 6,
     dentro(c, r, CENTRO) { return dist(CENTRO, [c, r]) <= 6; },
     obstaculos() { return []; },   // cenas de tutorial montam a própria mira; rocha no meio só atrapalharia
+  },
+  ruinas: {
+    nome: "Ruínas Enevoadas",
+    desc: "Um labirinto tático: múltiplos caminhos entre os territórios, bloqueados por escombros e névoa. Exige tática, não só força bruta.",
+    raio: 7,
+    dentro(c, r, CENTRO) {
+      const dist_ao_centro = dist(CENTRO, [c, r]);
+      // hexágono maior, mas com "vazios" estratégicos criados pelos obstáculos
+      return dist_ao_centro <= 7;
+    },
+    obstaculos(CENTRO) {
+      // padrão em "X" com vazios: 4 fileiras de rochas fazendo uma malha
+      // que deixa 3 corredores principais (norte, sul, leste-oeste)
+      const obst = [];
+      // anel em volta do centro (tipo uma coroa)
+      for (let angle = 0; angle < 6; angle++) {
+        const dx = [2, 1, -1, -2, -1, 1][angle];
+        const dy = [0, 2, 2, 0, -2, -2][angle];
+        const cx = CENTRO[0] + dx;
+        const ry = CENTRO[1] + dy;
+        if (cx >= 0 && cx < COLS && ry >= 0 && ry < LINS) obst.push([cx, ry]);
+      }
+      // diagonal rochas (padrão em "X"): deixa espaço no meio mas força desvios
+      for (let delta = -2; delta <= 2; delta += 2) {
+        if (delta === 0) continue;   // deixa aberto no meio
+        const c1 = CENTRO[0] + delta;
+        const r1 = CENTRO[1] + delta;
+        const c2 = CENTRO[0] + delta;
+        const r2 = CENTRO[1] - delta;
+        if (c1 >= 0 && c1 < COLS && r1 >= 0 && r1 < LINS) obst.push([c1, r1]);
+        if (c2 >= 0 && c2 < COLS && r2 >= 0 && r2 < LINS) obst.push([c2, r2]);
+      }
+      // rochas nas "laterais" do mapa (deixa corredor central)
+      for (let c = 2; c <= COLS - 3; c += 3) {
+        if (c === CENTRO[0]) continue;
+        const rMin = Math.max(0, CENTRO[1] - 2);
+        const rMax = Math.min(LINS - 1, CENTRO[1] + 2);
+        obst.push([c, rMin]);
+        obst.push([c, rMax]);
+      }
+      return obst.filter(([c, r]) => dist(CENTRO, [c, r]) <= 7 && dist(CENTRO, [c, r]) > 1);
+    },
   },
 };
 
@@ -1183,8 +1241,6 @@ function render() {
   G("faixa").className = "faixa t" + t;
   G("quem").textContent = NOMES[t];
   G("statMana").textContent = tm.mana;
-  G("statBase0").textContent = T.times[0].base;
-  G("statBase1").textContent = T.times[1].base;
 
   // Névoa de guerra: no modo CPU, o humano enxerga sempre a partir do
   // PRÓPRIO time, mesmo durante o turno da CPU — senão a tela revelaria
@@ -1243,12 +1299,21 @@ function render() {
       <div class="vidaNum">${Math.max(0, h.vida)}/${h.vidaMax}</div>
     </div>`;
   }));
-  // símbolo de sucata no centroide de cada Base
+  // símbolo de sucata no centroide de cada Base, e a vida da Base do
+  // lado de fora do aglomerado (time 0 sempre nasce à esquerda do
+  // CENTRO, time 1 à direita — ver rotacionar180 em construirMapa)
   [0, 1].forEach(tt => {
     const pts = BASES[tt].map(([bc, br]) => posPx(bc, br));
     const cx = pts.reduce((s, p) => s + p.left, 0) / pts.length + 26;
     const cy = pts.reduce((s, p) => s + p.top, 0) / pts.length + 22;
     html += `<div class="baseSimbolo t${tt}" style="left:${cx}px;top:${cy}px">♻</div>`;
+    // HP alinhado com o hexágono mais EXTERNO do cluster — BASES[tt][0] é a
+    // âncora mais distante do CENTRO (ver clusterBase), não a média dos 3
+    const externo = posPx(...BASES[tt][0]);
+    const hpY = externo.top + 22;
+    const minLeft = Math.min(...pts.map(p => p.left)), maxLeft = Math.max(...pts.map(p => p.left));
+    const hpX = tt === 0 ? minLeft - 30 : maxLeft + 52 + 30;
+    html += `<div class="baseHp t${tt}" style="left:${hpX}px;top:${hpY}px">${T.times[tt].base}</div>`;
   });
   // botão de confirmar ataque/cura — some com qualquer outro clique no tabuleiro
   if (confirmacaoPendente) {
