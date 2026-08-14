@@ -1424,7 +1424,6 @@ function render() {
   G("sairTutorial").style.display = T.tutorial ? "" : "none";
   G("faixa").className = "faixa t" + t;
   G("quem").textContent = NOMES[t];
-  G("statMana").textContent = tm.mana;
 
   // Névoa de guerra: no modo CPU, o humano enxerga sempre a partir do
   // PRÓPRIO time, mesmo durante o turno da CPU — senão a tela revelaria
@@ -1432,6 +1431,10 @@ function render() {
   // Online funciona igual: cada aparelho sempre olha pro próprio lado.
   const timeDeVisao = T.cpu ? (1 - T.cpuTime) : (T.online ? T.meuTime : t);
   const vis = casasVisiveis(timeDeVisao);
+  // A mana exibida no HUD segue a mesma regra da névoa: cada tela mostra
+  // a mana do PRÓPRIO time, nunca a do adversário, mesmo durante o turno
+  // dele — senão o HUD vazaria quanto de mana o outro lado tem disponível.
+  G("statMana").textContent = T.times[timeDeVisao].mana;
   const alcM = selecionado ? alcanceMovimento(selecionado) : [];
   const alcAcao = selecionado ? raioAcao(selecionado) : [];
   const av = selecionado && !selecionado.cura && !modoHabilidade ? alvosAtaque(selecionado) : { herois: [], base: null };
