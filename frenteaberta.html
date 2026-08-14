@@ -1755,19 +1755,31 @@ function distReal(origem, destino, ignorar) {
 function pesoAlvo(h) {
   return { heavy: 4, sniper: 3, medic: 3, soldier: 2, runner: 1 }[h.arq] || 1;
 }
+/* Prioridade de um alvo de ATAQUE pro atacante `h` — abate garantido vem
+   sempre na frente de qualquer outra consideração (pesa 1000: nenhuma
+   combinação de peso de arquétipo/vida restante chega perto disso),
+   senão pesa o arquétipo do alvo e prefere quem já está mais perto de
+   morrer. Usada tanto pra escolher a casa de destino (alvosPotenciaisDificil)
+   quanto pra escolher QUAL alvo atacar dali — antes essas duas escolhas
+   usavam heurísticas diferentes, e a de "qual alvo atacar" ignorava abate
+   garantido, o que fazia a IA largar um abate na mesa pra beliscar um
+   arquétipo "mais pesado" que não ia nem chegar perto de morrer. */
+function prioridadeAtaque(atacante, alvo) {
+  return (atacante.dano >= alvo.vida ? 1000 : 0) + pesoAlvo(alvo) * 10 + Math.max(0, 20 - alvo.vida);
+}
+function prioridadeCura(alvo) {
+  return (alvo.vidaMax - alvo.vida) + pesoAlvo(alvo);
+}
 function baseMaisPerto(pos, t) {
   return BASES[t].slice().sort((a, b) => dist(pos, a) - dist(pos, b))[0];
 }
 function alvosPotenciaisDificil(h) {
   if (h.cura) {
     return T.times[h.t].campo.filter(o => o !== h && o.vida < o.vidaMax)
-      .map(o => ({ pos: o.pos, prioridade: (o.vidaMax - o.vida) + pesoAlvo(o) }));
+      .map(o => ({ pos: o.pos, prioridade: prioridadeCura(o) }));
   }
   const inimigo = 1 - h.t;
-  const alvos = T.times[inimigo].campo.map(o => ({
-    pos: o.pos,
-    prioridade: (h.dano >= o.vida ? 1000 : 0) + pesoAlvo(o) * 10 + Math.max(0, 20 - o.vida),
-  }));
+  const alvos = T.times[inimigo].campo.map(o => ({ pos: o.pos, prioridade: prioridadeAtaque(h, o) }));
   alvos.push({ pos: baseMaisPerto(h.pos, inimigo), prioridade: 5 });
   return alvos;
 }
@@ -1915,12 +1927,25 @@ function avaliarEstado(estado, t) {
   const inimigo = 1 - t;
   const mt = estado.times[t], mi = estado.times[inimigo];
   let score = (mt.base - mi.base) * 15;
-  const valorTime = tm => tm.campo.reduce((s, h) => s + pesoAlvo(h) * (h.vida / h.vidaMax), 0);
+  // Valor de um herói vivo não cai proporcional à vida perdida — o dano
+  // dele continua o mesmo até o fim (um Heavy com 1hp bate igual um Heavy
+  // com 4hp). Um herói vivo guarda a maior parte do próprio peso mesmo
+  // quase morto (só 30% do peso varia com a vida restante); o resto do
+  // valor só cai de vez quando o herói de fato morre e some do campo.
+  // Com peso proporcional à vida puro (como era antes), meio-matar um
+  // Heavy pontuava mais que abater de vez um Runner barato, mesmo esse
+  // abate sendo garantido e permanente — a IA largava abates na mesa.
+  const valorTime = tm => tm.campo.reduce((s, h) => s + pesoAlvo(h) * (0.7 + 0.3 * (h.vida / h.vidaMax)), 0);
   score += (valorTime(mt) - valorTime(mi)) * 10;
   score += (mt.mana - mi.mana) * 0.3;
-  // penaliza deixar herói exposto ao alcance de um inimigo que já está no tabuleiro — não é adivinhar a jogada do adversário, é geometria visível
+  // penaliza deixar herói exposto ao alcance de um inimigo que já está no
+  // tabuleiro — não é adivinhar a jogada do adversário, é geometria visível.
+  // Escalado pelo peso do arquétipo exposto: perder um Heavy ou um Sniper
+  // dói mais que perder um Runner descartável — antes a penalidade era a
+  // mesma pra qualquer um não-frágil, então a IA se arriscava com heróis
+  // caros do mesmo jeito que se arriscaria com um Runner.
   for (const h of mt.campo) {
-    if (mi.campo.some(o => dist(h.pos, o.pos) <= o.alc)) score -= (h.vidaMax <= 1 ? 12 : 4);
+    if (mi.campo.some(o => dist(h.pos, o.pos) <= o.alc)) score -= (h.vidaMax <= 1 ? 12 : 4) * (pesoAlvo(h) / 2);
   }
   for (const [pc, pr] of PONTOS_MANA) {
     if (mt.campo.some(h => h.pos[0] === pc && h.pos[1] === pr)) score += 6;
@@ -1951,14 +1976,21 @@ function candidatosAcaoHeroi(h) {
   if (h.cura) {
     const ac = alvosCura(h);
     if (ac.aliados.length) {
-      const alvo = ac.aliados.slice().sort((a, b) => (b.vidaMax - b.vida) - (a.vidaMax - a.vida))[0];
-      candidatos.push({ tipo: "curar", alvoUid: alvo._uid });
+      // até 2 alvos de cura candidatos (não só "quem tem mais HP faltando" —
+      // curar um aliado de arquétipo mais valioso pode valer mais mesmo
+      // faltando menos vida), deixa avaliarEstado() desempatar de verdade
+      const ordenados = ac.aliados.slice().sort((a, b) => prioridadeCura(b) - prioridadeCura(a));
+      for (const alvo of ordenados.slice(0, 2)) candidatos.push({ tipo: "curar", alvoUid: alvo._uid });
     }
   } else {
     const av = alvosAtaque(h);
     if (av.herois.length) {
-      const alvo = av.herois.slice().sort((a, b) => pesoAlvo(b) - pesoAlvo(a) || a.vida - b.vida)[0];
-      candidatos.push({ tipo: "ataca", alvoUid: alvo._uid });
+      // até 2 alvos de ataque candidatos, ordenados por prioridadeAtaque —
+      // ANTES só existia 1 candidato e a ordenação nem considerava abate
+      // garantido, então a IA podia largar um abate na mesa pra beliscar
+      // um arquétipo "mais pesado" que não morria de jeito nenhum
+      const ordenados = av.herois.slice().sort((a, b) => prioridadeAtaque(h, b) - prioridadeAtaque(h, a));
+      for (const alvo of ordenados.slice(0, 2)) candidatos.push({ tipo: "ataca", alvoUid: alvo._uid });
     }
     if (av.base !== null) candidatos.push({ tipo: "atacaBase", timeAlvo: av.base });
   }
@@ -1979,8 +2011,9 @@ function candidatosAcaoHeroi(h) {
       }
       return { p, pontos: melhorPontos };
     }).sort((a, b) => b.pontos - a.pontos);
-    // as 2 melhores casas de destino — dá pra IA comparar "avançar e arriscar" vs "posição mais segura"
-    for (const { p } of pontuadas.slice(0, 2)) candidatos.push({ tipo: "mover", c: p[0], r: p[1] });
+    // as 3 melhores casas de destino — dá pra IA comparar mais variações de
+    // "avançar e arriscar" vs "posição mais segura" (era 2)
+    for (const { p } of pontuadas.slice(0, 3)) candidatos.push({ tipo: "mover", c: p[0], r: p[1] });
   }
 
   candidatos.push({ tipo: "passar" });   // sempre existe a opção de não fazer nada
@@ -2010,13 +2043,13 @@ function executarDescritor(h, desc) {
       if (h.cura) {
         const ac = alvosCura(h);
         if (ac.aliados.length) {
-          const alvo = ac.aliados.slice().sort((a, b) => (b.vidaMax - b.vida) - (a.vidaMax - a.vida))[0];
+          const alvo = ac.aliados.slice().sort((a, b) => prioridadeCura(b) - prioridadeCura(a))[0];
           curar(h, alvo); log.push({ tipo: "curar", heroUid: h._uid, alvoUid: alvo._uid });
         }
       } else {
         const av = alvosAtaque(h);
         if (av.herois.length) {
-          const alvo = av.herois.slice().sort((a, b) => pesoAlvo(b) - pesoAlvo(a) || a.vida - b.vida)[0];
+          const alvo = av.herois.slice().sort((a, b) => prioridadeAtaque(h, b) - prioridadeAtaque(h, a))[0];
           ataca(h, alvo); log.push({ tipo: "ataca", heroUid: h._uid, alvoUid: alvo._uid });
         } else if (av.base !== null) {
           atacaBase(h, av.base); log.push({ tipo: "atacaBase", heroUid: h._uid, timeAlvo: av.base });
@@ -2033,8 +2066,19 @@ function executarDescritor(h, desc) {
    os `largura` melhores depois de cada herói agir. No fim, sobra a
    melhor sequência completa de ações do turno inteiro. Largura pequena
    de propósito — o que mantém rápido sem ficar burro. */
+/* Quem já tem um abate garantido dali (sem precisar mover) age primeiro —
+   sem isso, a poda gananciosa do meio do turno podia descartar o ramo
+   que continha esse abate antes dele nunca ser executado, só porque um
+   herói de peso maior (mas sem abate disponível) foi escalado pra agir
+   antes por pesoAlvo(). */
+function temAbateImediato(h) {
+  if (h.cura) return false;
+  return T.times[1 - h.t].campo.some(o => dist(h.pos, o.pos) <= h.alc && !o.intocavel && h.dano >= o.vida);
+}
 function beamSearchAcoes(t, largura) {
-  const ordemUids = [...T.times[t].campo].sort((a, b) => pesoAlvo(b) - pesoAlvo(a)).map(h => h._uid);
+  const ordemUids = [...T.times[t].campo]
+    .sort((a, b) => (temAbateImediato(b) - temAbateImediato(a)) || (pesoAlvo(b) - pesoAlvo(a)))
+    .map(h => h._uid);
   let feixe = [{ snapshot: structuredClone(T), log: [] }];
   for (const uid of ordemUids) {
     const proxFeixe = [];
@@ -2056,10 +2100,12 @@ function beamSearchAcoes(t, largura) {
   return feixe.map(r => ({ score: avaliarEstado(r.snapshot, t), log: r.log })).sort((a, b) => b.score - a.score);
 }
 
-/* Poucos planos de invocação pra testar (não invocar nada, ou investir
-   forte) — cada um vira o ponto de partida de uma busca em feixe
-   separada, e o conjunto todo (plano de invocação + turno de ações)
-   que pontuar melhor é o escolhido. */
+/* Planos de invocação pra testar — cada um vira o ponto de partida de uma
+   busca em feixe separada, e o conjunto todo (plano de invocação + turno
+   de ações) que pontuar melhor é o escolhido. Antes só existiam 2 planos
+   ("não invocar nada" ou "gastar tudo que der"), então a IA nunca
+   considerava o meio-termo de investir só um pouco e guardar Mana pra
+   agir — agora testa um terceiro plano "moderado" também. */
 function gerarPlanosInvocacao(t, estadoReal) {
   const tm = estadoReal.times[t];
   const reserva = tm.campo.length;
@@ -2069,15 +2115,18 @@ function gerarPlanosInvocacao(t, estadoReal) {
     const cels = casasDeInvocacao(t).slice().sort((a, b) => dist(a, CENTRO) - dist(b, CENTRO));
     if (cels.length) {
       const ordenado = acessiveis.slice().sort((a, b) => ARQUETIPOS[HERO_ARQ[b]].custo - ARQUETIPOS[HERO_ARQ[a]].custo);
-      const plano = []; let manaRestante = tm.mana; const usados = new Set();
+      const planoForte = []; let manaRestante = tm.mana; const usados = new Set();
       for (const cel of cels) {
         const escolhido = ordenado.find(id => !usados.has(id) && ARQUETIPOS[HERO_ARQ[id]].custo <= manaRestante - reserva);
         if (!escolhido) continue;
-        plano.push({ id: escolhido, c: cel[0], r: cel[1] });
+        planoForte.push({ id: escolhido, c: cel[0], r: cel[1] });
         manaRestante -= ARQUETIPOS[HERO_ARQ[escolhido]].custo;
         usados.add(escolhido);
       }
-      if (plano.length) planos.push(plano);
+      if (planoForte.length) planos.push(planoForte);
+      if (planoForte.length !== 1) {
+        planos.push([{ id: ordenado[0], c: cels[0][0], r: cels[0][1] }]);
+      }
     }
   }
   return planos;
@@ -2119,7 +2168,7 @@ async function jogaCpuJagerLaramais(t) {
     T = structuredClone(real);
     simulando = true;
     const uidsInvocados = invPlano.map(({ id, c, r }) => { invoca(id, c, r); const oc = ocupante(c, r); return oc ? oc._uid : null; });
-    const ramos = beamSearchAcoes(t, 3);
+    const ramos = beamSearchAcoes(t, 5);
     simulando = false;
     if (ramos.length && (!melhor || ramos[0].score > melhor.score)) {
       melhor = { invPlano, uidsInvocados, log: ramos[0].log, score: ramos[0].score };
