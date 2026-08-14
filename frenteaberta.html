@@ -188,6 +188,15 @@ button{font-family:var(--ui);cursor:pointer;border:none;background:none;color:in
 .opcao span{font-size:11.5px;color:var(--ink-2)}
 .opcao.sel{border-color:var(--brass);background:var(--brass-glow)}
 
+/* ───── Jogar online: sala e código ───── */
+.campoTexto{width:100%;padding:14px;margin-top:14px;font-size:22px;text-align:center;
+  letter-spacing:.15em;text-transform:uppercase;border-radius:11px;
+  border:1px solid var(--line-soft);background:var(--ground-3);color:var(--ink);
+  font-family:var(--mono,monospace)}
+.campoTexto::placeholder{color:var(--ink-3);letter-spacing:normal;text-transform:none;font-family:var(--ui)}
+.codigoSala{font-size:38px;letter-spacing:.12em;color:var(--brass);font-family:var(--mono,monospace);
+  font-weight:900;margin:10px 0;text-shadow:0 0 10px rgba(212,162,76,.3)}
+
 /* ───── Habilidades: brilho verde quando a Mana estocada bate 10 ───── */
 @keyframes brilhoHab{0%,100%{box-shadow:0 0 6px 2px rgba(95,191,138,.55)}50%{box-shadow:0 0 14px 5px rgba(95,191,138,.9)}}
 .peca.habilitavel{animation:brilhoHab 1.4s ease-in-out infinite}
@@ -204,6 +213,11 @@ button{font-family:var(--ui);cursor:pointer;border:none;background:none;color:in
 @keyframes confirmPop{0%{transform:scale(.3);opacity:0}100%{transform:scale(1);opacity:1}}
 
 </style>
+
+<!-- Único recurso externo do jogo: biblioteca PeerJS, usada só pelo modo
+     "Jogar online" (conexão direta entre os dois aparelhos, sem servidor
+     próprio). O resto do jogo continua 100% autocontido. -->
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
 
 <div id="app">
   <header id="hud">
@@ -571,6 +585,8 @@ let bancoSel = null;      // id do herói do banco selecionado pra invocar
 let modoHabilidade = false;   // true = próximo clique no tabuleiro tenta usar a habilidade do selecionado
 let confirmacaoPendente = null;   // { tipo:"ataque"|"cura"|"base", heroi, alvo, timeAlvo, pos } — aguardando confirmação (espada/cruz)
 let simulando = false;   // true = a IA Jager Laramais está testando uma jogada hipotética; suprime tela/toast/pausas
+let peer = null, conexao = null;   // PeerJS — só usados no modo "Jogar online"
+let aplicandoRemoto = false;   // true enquanto adota um T recebido pela rede; evita reenviar o que acabou de chegar
 
 function idPorArquetipo(arqKey) { return Object.keys(HERO_ARQ).find(id => HERO_ARQ[id] === arqKey); }
 let _uidSeq = 1;
@@ -624,6 +640,7 @@ function novoEstado() {
   return {
     fase: "jogando", vez: 0, rodada: 1, fim: null,
     cpu: false, cpuTime: 1, cpuDificuldade: "normal",
+    online: false, meuTime: 0,
     times: [timeInicial(0), timeInicial(1)],
   };
 }
@@ -696,10 +713,12 @@ function telaAbertura() {
     <p style="margin-top:10px">${lista}</p>
     <button class="grande" id="okPvp">Dois jogadores (mesmo aparelho)</button>
     <button class="grande" id="okCpu">Jogar contra a CPU</button>
+    <button class="grande" id="okOnline" style="background:var(--azul);color:#0B120F">🌐 Jogar online</button>
     <button class="grande" id="okTutorial" style="background:var(--ground-3);color:var(--ink);border:1px solid var(--line-soft)">Tutorial de habilidades</button>`;
   G("tela").classList.add("aberta");
   G("okPvp").onclick = () => { construirMapa("atual"); T = novoEstado(); fecha(); iniciaPartida(); };
   G("okCpu").onclick = () => telaConfigCpu();
+  G("okOnline").onclick = () => telaOnline();
   G("okTutorial").onclick = () => telaTutorial();
 }
 function telaTutorial() {
@@ -831,6 +850,147 @@ function iniciaPartida() {
   else telaPasseTurno();
 }
 
+/* ───────────────────────── Jogar online (PeerJS) ─────────────────────────
+   Conexão direta entre os dois aparelhos, sem servidor próprio — o PeerJS
+   só ajuda os dois a "se encontrarem" usando um serviço público deles.
+   Sincronização é a coisa mais simples possível: sempre que o T muda de
+   verdade (render() é chamado), o dono da vez manda o tabuleiro INTEIRO
+   pro outro lado, que só substitui o próprio T pelo que chegou. Não tem
+   "replay de jogadas" nem risco de desincronizar aos poucos — cada
+   mensagem já é o estado completo. */
+function gerarCodigoSala() {
+  const chars = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";   // sem 0/O/1/I/L, pra não confundir ao digitar
+  let s = "";
+  for (let i = 0; i < 5; i++) s += chars[Math.floor(Math.random() * chars.length)];
+  return s;
+}
+/* O serializador do PeerJS não sabe converter um Set — troca invocouEm
+   por um array simples só pra viajar pela rede; volta a virar Set assim
+   que chega do outro lado (paraFioAntes/paraFioDepois). */
+function paraFioAntes(t) {
+  return { ...t, times: t.times.map(tm => ({ ...tm, invocouEm: [...tm.invocouEm] })) };
+}
+function paraFioDepois(t) {
+  t.times.forEach(tm => { tm.invocouEm = new Set(tm.invocouEm); });
+  return t;
+}
+function enviarEstado() {
+  if (conexao && conexao.open) { try { conexao.send({ tipo: "estado", T: paraFioAntes(T) }); } catch (e) {} }
+}
+function aoReceberDados(dados) {
+  if (!dados) return;
+  if (dados.tipo === "config") {
+    aplicandoRemoto = true;
+    construirMapa(dados.mapaId);
+    T = paraFioDepois(dados.T);
+    T.online = true; T.meuTime = 1;   // quem entra na sala é sempre o time CARMIM
+    fecha();
+    if (T.fim !== null) telaFim(); else render();
+    aplicandoRemoto = false;   // só solta DEPOIS do render(), senão o render ecoa o que acabou de chegar
+  } else if (dados.tipo === "estado") {
+    const vezEraMinha = T && T.vez === T.meuTime;
+    const meuTimeLocal = T.meuTime;   // "de quem é esse aparelho" é local — nunca deve vir da rede
+    aplicandoRemoto = true;
+    T = paraFioDepois(dados.T);
+    T.online = true; T.meuTime = meuTimeLocal;
+    if (T.fim !== null) telaFim(); else render();
+    aplicandoRemoto = false;   // só solta DEPOIS do render(), senão o render ecoa o que acabou de chegar
+    if (T.vez === T.meuTime && !vezEraMinha) {
+      // o turno acabou de virar pro meu lado — ninguém mais vai chamar
+      // iniciaTurno() por mim, então sou eu quem inicia (e propaga o
+      // bônus de Mana pro outro lado com um envio de verdade, já que
+      // aplicandoRemoto acabou de voltar a false)
+      toast("Sua vez!");
+      if (T.fim === null) iniciaTurno();
+    }
+  }
+}
+function encerraSalaOnline(msg) {
+  if (conexao) { try { conexao.close(); } catch (e) {} conexao = null; }
+  if (peer) { try { peer.destroy(); } catch (e) {} peer = null; }
+  if (msg) toast(msg);
+}
+function telaOnline() {
+  G("telacx").innerHTML = `<span class="et">PvP pela internet</span><h2>Jogar<br>online</h2>
+    <p>Um jogador cria a sala e manda o código pro outro entrar. Os dois aparelhos
+    precisam de internet — não precisa estar na mesma rede/wifi.</p>
+    <button class="grande" id="okCriarSala">Criar sala</button>
+    <button class="grande" id="okEntrarSala" style="background:var(--ground-3);color:var(--ink);border:1px solid var(--line-soft)">Entrar com um código</button>
+    <button class="grande" id="okVoltarOnline" style="background:transparent;color:var(--ink-2);margin-top:6px">◀ Voltar</button>`;
+  G("tela").classList.add("aberta");
+  G("okCriarSala").onclick = () => telaCriarSala();
+  G("okEntrarSala").onclick = () => telaEntrarSala();
+  G("okVoltarOnline").onclick = () => telaAbertura();
+}
+function telaCriarSala() {
+  let mapaEsc = "atual";
+  function desenha() {
+    G("telacx").innerHTML = `<span class="et">Criar sala</span><h2>Escolha o<br>mapa</h2>
+      <div class="escolha" id="poolMapaOnline">
+        ${Object.keys(MAPAS).filter(id => id !== "tutorial").map(id => `<div class="opcao${mapaEsc === id ? " sel" : ""}" data-id="${id}">
+          <b>${MAPAS[id].nome}</b><span>${MAPAS[id].desc}</span></div>`).join("")}
+      </div>
+      <button class="grande" id="okCriarConfirma">Criar sala</button>
+      <button class="grande" id="okVoltarCriar" style="background:transparent;color:var(--ink-2);margin-top:6px">◀ Voltar</button>`;
+    [...G("poolMapaOnline").children].forEach(el => el.onclick = () => { mapaEsc = el.dataset.id; desenha(); });
+    G("okVoltarCriar").onclick = () => telaOnline();
+    G("okCriarConfirma").onclick = () => iniciarHost(mapaEsc);
+  }
+  desenha();
+  G("tela").classList.add("aberta");
+}
+function iniciarHost(mapaEsc) {
+  G("telacx").innerHTML = `<span class="et">Criando sala…</span><h2>Aguarde</h2><p>Conectando ao servidor de sinalização...</p>`;
+  const codigo = gerarCodigoSala();
+  peer = new Peer("jagerlaramais-" + codigo);
+  peer.on("open", () => {
+    G("telacx").innerHTML = `<span class="et">Sala criada</span><h2>Código da sala</h2>
+      <div class="codigoSala">${codigo}</div>
+      <p>Mande esse código pro outro jogador. Assim que ele entrar, a partida começa sozinha.</p>
+      <button class="grande" id="okCancelarSala" style="background:var(--ground-3);color:var(--ink);border:1px solid var(--line-soft)">Cancelar</button>`;
+    G("okCancelarSala").onclick = () => { encerraSalaOnline(); telaAbertura(); };
+  });
+  peer.on("connection", (conn) => {
+    conexao = conn;
+    conexao.on("data", aoReceberDados);
+    conexao.on("close", () => toast("O outro jogador saiu da partida"));
+    conexao.on("open", () => {
+      construirMapa(mapaEsc);
+      T = novoEstado();
+      T.online = true; T.meuTime = 0;   // quem cria a sala é sempre o time AZUL
+      conexao.send({ tipo: "config", mapaId: mapaEsc, T: paraFioAntes(T) });
+      fecha();
+      iniciaPartida();
+    });
+  });
+  peer.on("error", () => { toast("Erro de conexão — tente criar a sala de novo"); telaAbertura(); });
+}
+function telaEntrarSala() {
+  G("telacx").innerHTML = `<span class="et">Entrar em sala</span><h2>Código da<br>sala</h2>
+    <input type="text" id="inputCodigoSala" maxlength="5" placeholder="ex: A1B2C" class="campoTexto">
+    <button class="grande" id="okEntrarConfirma">Conectar</button>
+    <button class="grande" id="okVoltarEntrar" style="background:transparent;color:var(--ink-2);margin-top:6px">◀ Voltar</button>`;
+  G("tela").classList.add("aberta");
+  G("inputCodigoSala").focus();
+  G("okVoltarEntrar").onclick = () => telaOnline();
+  G("okEntrarConfirma").onclick = () => {
+    const codigo = G("inputCodigoSala").value.trim().toUpperCase();
+    if (!codigo) { toast("Digite o código da sala"); return; }
+    iniciarGuest(codigo);
+  };
+}
+function iniciarGuest(codigo) {
+  G("telacx").innerHTML = `<span class="et">Conectando…</span><h2>Aguarde</h2><p>Entrando na sala ${codigo}...</p>`;
+  peer = new Peer();
+  peer.on("open", () => {
+    conexao = peer.connect("jagerlaramais-" + codigo, { reliable: true });
+    conexao.on("data", aoReceberDados);
+    conexao.on("close", () => toast("O outro jogador saiu da partida"));
+    conexao.on("error", () => { toast("Não foi possível conectar — confira o código"); telaAbertura(); });
+  });
+  peer.on("error", () => { toast("Não foi possível conectar — confira o código e tente de novo"); telaAbertura(); });
+}
+
 /* ───────────────────────── Turno ───────────────────────── */
 function bonusPontosMana(t) {
   return PONTOS_MANA.filter(([c, r]) =>
@@ -854,6 +1014,14 @@ function iniciaTurno() {
 function telaPasseTurno() {
   const t = T.vez;
   if (T.cpu && t === T.cpuTime) { iniciaTurno(); jogaCpu(); return; }
+  if (T.online) {
+    // sem tela de "passar o aparelho" — cada jogador já está no próprio
+    // aparelho. Só quem começa o turno é quem de fato é dono dele; o
+    // outro lado só recebe o resultado sincronizado pela rede.
+    render();
+    if (t === T.meuTime) iniciaTurno();
+    return;
+  }
   const msg = T.cpu ? "Sua vez." : "É a sua vez. A névoa esconde o que seus heróis não enxergam — ninguém mais deve estar olhando.";
   abre(`<span class="et">${T.cpu ? "Turno" : "Passe o aparelho"}</span><h2 class="t${t}">${NOMES[t]}</h2>
     <p>${msg}</p>
@@ -1170,9 +1338,14 @@ function confirmarAcao() {
   selecionado = null;
   render();
 }
+/* true quando o dono deste aparelho não pode tocar em nada agora — ou é a
+   CPU jogando, ou é o turno do outro jogador numa partida online. */
+function naoEhMinhaVez() {
+  return (T.cpu && T.vez === T.cpuTime) || (T.online && T.vez !== T.meuTime);
+}
 function cliqueHex(c, r) {
   if (T.fase !== "jogando" || T.fim !== null) return;
-  if (T.cpu && T.vez === T.cpuTime) return;
+  if (naoEhMinhaVez()) return;
   const t = T.vez;
   confirmacaoPendente = null;
 
@@ -1212,7 +1385,7 @@ function cliqueHex(c, r) {
 }
 function cliqueBanco(id) {
   if (T.fase !== "jogando" || T.fim !== null) return;
-  if (T.cpu && T.vez === T.cpuTime) return;
+  if (naoEhMinhaVez()) return;
   const t = T.vez;
   if (!T.times[t].bench.includes(id)) return;
   confirmacaoPendente = null;
@@ -1241,6 +1414,11 @@ function casasVisiveis(t) {
 function render() {
   if (simulando) return;
   if (!T || T.fase !== "jogando") return;
+  // Toda vez que o estado muda de verdade (o guard "!aplicandoRemoto" evita
+  // reenviar o que acabou de chegar da rede, o que causaria um ping-pong
+  // infinito), manda o T inteiro pro outro jogador. É simples e barato:
+  // não sincroniza "jogadas", sincroniza o tabuleiro inteiro a cada mudança.
+  if (T.online && !aplicandoRemoto) enviarEstado();
   const t = T.vez, tm = T.times[t];
   G("rod").textContent = "R" + T.rodada;
   G("sairTutorial").style.display = T.tutorial ? "" : "none";
@@ -1251,7 +1429,8 @@ function render() {
   // Névoa de guerra: no modo CPU, o humano enxerga sempre a partir do
   // PRÓPRIO time, mesmo durante o turno da CPU — senão a tela revelaria
   // tudo que a CPU vê enquanto ela joga, o que seria informação injusta.
-  const timeDeVisao = T.cpu ? (1 - T.cpuTime) : t;
+  // Online funciona igual: cada aparelho sempre olha pro próprio lado.
+  const timeDeVisao = T.cpu ? (1 - T.cpuTime) : (T.online ? T.meuTime : t);
   const vis = casasVisiveis(timeDeVisao);
   const alcM = selecionado ? alcanceMovimento(selecionado) : [];
   const alcAcao = selecionado ? raioAcao(selecionado) : [];
@@ -1360,7 +1539,7 @@ function render() {
   });
 
   // painel de info
-  const vezDaCpu = T.cpu && t === T.cpuTime;
+  const vezDaCpu = naoEhMinhaVez();
   G("btFim").disabled = vezDaCpu;
   const btHab = G("btHab");
   if (btHab) {
@@ -1372,7 +1551,9 @@ function render() {
     btHab.textContent = modoHabilidade ? "Escolha o alvo…" : (hab ? `${hab.nome} · ${hab.custo}◆` : "Habilidade");
   }
   if (vezDaCpu) {
-    G("infoHeroi").innerHTML = `<b>${NOMES[t]} (CPU)</b> está jogando...`;
+    G("infoHeroi").innerHTML = T.online
+      ? `<b>Aguardando ${NOMES[t]}...</b>`
+      : `<b>${NOMES[t]} (CPU)</b> está jogando...`;
   } else if (selecionado) {
     const h = selecionado, arq = ARQUETIPOS[h.arq], hab = habilidadeDe(h);
     let infoHtml = `<b>${HEROIS[h.id].n}</b> — ${Math.max(0, h.vida)}/${h.vidaMax} vida ·
