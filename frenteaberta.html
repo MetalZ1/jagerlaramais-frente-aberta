@@ -570,8 +570,10 @@ let selecionado = null;   // referência ao herói em campo selecionado
 let bancoSel = null;      // id do herói do banco selecionado pra invocar
 let modoHabilidade = false;   // true = próximo clique no tabuleiro tenta usar a habilidade do selecionado
 let confirmacaoPendente = null;   // { tipo:"ataque"|"cura"|"base", heroi, alvo, timeAlvo, pos } — aguardando confirmação (espada/cruz)
+let simulando = false;   // true = a IA Jager Laramais está testando uma jogada hipotética; suprime tela/toast/pausas
 
 function idPorArquetipo(arqKey) { return Object.keys(HERO_ARQ).find(id => HERO_ARQ[id] === arqKey); }
+let _uidSeq = 1;
 function criarHeroi(id, t, pos) {
   const arqKey = HERO_ARQ[id], arq = ARQUETIPOS[arqKey];
   return {
@@ -580,6 +582,7 @@ function criarHeroi(id, t, pos) {
     movTotal: arq.movTotal, movAtaque: arq.movAtaque, cura: arq.cura,
     moveu: false, atacou: false,
     intocavel: false, exausto: false, exaustoPendente: false,
+    _uid: _uidSeq++,   // identidade estável pra IA Jager Laramais rastrear heróis entre simulação e jogo real
   };
 }
 /* Medic e Heavy iniciais: cada um se posiciona logo atrás de uma
@@ -635,6 +638,7 @@ function abre(html, onOk) {
 function fecha() { G("tela").classList.remove("aberta"); }
 let toastT = null;
 function toast(msg) {
+  if (simulando) return;
   const el = G("toast"); el.textContent = msg; el.classList.add("on");
   clearTimeout(toastT); toastT = setTimeout(() => el.classList.remove("on"), 1600);
 }
@@ -795,6 +799,7 @@ function telaConfigCpu() {
   const DIFICULDADES = {
     normal: { nome: "Normal", desc: "Age por conta própria, sem grande estratégia — às vezes escolhe rotas ruins." },
     dificil:{ nome: "Difícil", desc: "Prioriza abates certeiros, protege heróis frágeis e avança pelo caminho mais direto até a sua Base." },
+    jagerlaramais:{ nome: "🎖 Jager Laramais", desc: "Testa várias jogadas inteiras antes de agir e escolhe a que deixa o time em melhor posição. O adversário mais difícil do jogo." },
   };
   function desenha() {
     G("telacx").innerHTML = `<span class="et">Jogar contra a CPU</span><h2>Config da<br>partida</h2>
@@ -868,7 +873,7 @@ function checaFim() {
     const tm = T.times[t];
     if (tm.base <= 0) { T.fim = 1 - t; break; }
   }
-  if (T.fim !== null) telaFim();
+  if (T.fim !== null && !simulando) telaFim();
 }
 function telaFim() {
   render();
@@ -1234,6 +1239,7 @@ function casasVisiveis(t) {
 
 /* ───────────────────────── Render ───────────────────────── */
 function render() {
+  if (simulando) return;
   if (!T || T.fase !== "jogando") return;
   const t = T.vez, tm = T.times[t];
   G("rod").textContent = "R" + T.rodada;
@@ -1392,7 +1398,7 @@ function render() {
    nascimento está livre, depois age com cada herói em campo (ataca ou
    cura se puder, senão anda em direção ao alvo mais próximo e tenta
    agir de novo). */
-function espera(ms) { return new Promise(res => setTimeout(res, ms)); }
+function espera(ms) { return simulando ? Promise.resolve() : new Promise(res => setTimeout(res, ms)); }
 function alvoMaisFraco(lista) {
   return lista.reduce((pior, o) => (o.vida < pior.vida ? o : pior), lista[0]);
 }
@@ -1516,11 +1522,15 @@ function alvosPotenciaisDificil(h) {
 /* Tenta usar a habilidade especial antes de agir normalmente — só
    quando dá pra estimar um ganho real (acerta pelo menos 1 inimigo,
    ou reativa um aliado que já agiu). */
-function cpuTentaHabilidadeDificil(h) {
-  if (!habDisponivel(h)) return false;
+/* Calcula qual seria o melhor alvo pra habilidade do herói `h`, sem
+   executar — usada tanto pela IA Difícil (que já mira e usa na hora)
+   quanto pela IA Jager Laramais (que testa o resultado antes de
+   decidir se vale a pena, dentro da simulação). Retorna [c,r] ou null. */
+function melhorAlvoHabilidade(h) {
+  if (!habDisponivel(h)) return null;
   const inimigo = 1 - h.t;
   const alvos = alvosHabilidade(h);
-  if (!alvos.length) return false;
+  if (!alvos.length) return null;
 
   if (h.arq === "heavy") {
     const viz = vizinhos(...h.pos);
@@ -1531,11 +1541,11 @@ function cpuTentaHabilidadeDificil(h) {
       const n = T.times[inimigo].campo.filter(o => area.some(([ac, ar]) => ac === o.pos[0] && ar === o.pos[1])).length;
       if (n > melhorN) { melhorN = n; melhor = v; }
     }
-    return melhor && usarHabilidade(h, melhor[0], melhor[1]);
+    return melhor;
   }
   if (h.arq === "soldier") {
     const alvo = T.times[inimigo].campo.find(o => !o.intocavel && dist(h.pos, o.pos) === 1);
-    return !!alvo && usarHabilidade(h, alvo.pos[0], alvo.pos[1]);
+    return alvo ? alvo.pos : null;
   }
   if (h.arq === "sniper") {
     let melhor = null, melhorN = 0;
@@ -1548,7 +1558,7 @@ function cpuTentaHabilidadeDificil(h) {
       const n = 1 + (alvo2 && alvo2.t === inimigo ? 1 : 0);
       if (n > melhorN) { melhorN = n; melhor = pos; }
     }
-    return melhor && usarHabilidade(h, melhor[0], melhor[1]);
+    return melhor;
   }
   if (h.arq === "runner") {
     let melhor = null, melhorN = 0;
@@ -1566,13 +1576,17 @@ function cpuTentaHabilidadeDificil(h) {
       }
       if (n > melhorN) { melhorN = n; melhor = pos; }
     }
-    return melhor && usarHabilidade(h, melhor[0], melhor[1]);
+    return melhor;
   }
   if (h.arq === "medic") {
     const alvo = T.times[h.t].campo.find(o => o !== h && o.atacou && dist(h.pos, o.pos) === 1);
-    return !!alvo && usarHabilidade(h, alvo.pos[0], alvo.pos[1]);
+    return alvo ? alvo.pos : null;
   }
-  return false;
+  return null;
+}
+function cpuTentaHabilidadeDificil(h) {
+  const alvo = melhorAlvoHabilidade(h);
+  return !!alvo && usarHabilidade(h, alvo[0], alvo[1]);
 }
 async function cpuAgeComHeroiDificil(h) {
   if (cpuTentaHabilidadeDificil(h)) return;
@@ -1626,11 +1640,260 @@ async function jogaCpuDificil(t) {
     await espera(300);
   }
 }
+/* ───────────────────────── IA da CPU — Jager Laramais ─────────────────────────
+   A diferença pra Difícil não é um heurística mais esperta — é testar
+   VÁRIAS jogadas hipotéticas inteiras (quem invocar, pra onde cada
+   herói vai, quem ataca quem) e comparar o RESULTADO de cada uma antes
+   de agir de verdade. Só enxerga o que já está visível no tabuleiro
+   (a mesma informação que qualquer jogador vê) — não lê nada oculto
+   nem simula a jogada do adversário, só as próprias.
+
+   Mecânica: clona o estado (T = structuredClone(real)), liga a flag
+   `simulando` (que faz render()/toast()/espera() virarem no-op, pra
+   não piscar telas hipotéticas nem abrir o modal de "fim de partida"
+   por engano), executa a jogada candidata na cópia, pontua o tabuleiro
+   resultante com avaliarEstado(), e descarta a cópia. Repete pra cada
+   candidata; no final, reexecuta de verdade só a que pontuou melhor. */
+
+/* Pontua um estado de jogo (T real ou uma cópia simulada) do ponto de
+   vista do time `t` — quanto maior, melhor pra esse time. Usa só campos
+   já visíveis no tabuleiro (vida, posição, Mana, Base) — nada de
+   informação que o jogador não teria. */
+function avaliarEstado(estado, t) {
+  const inimigo = 1 - t;
+  const mt = estado.times[t], mi = estado.times[inimigo];
+  let score = (mt.base - mi.base) * 15;
+  const valorTime = tm => tm.campo.reduce((s, h) => s + pesoAlvo(h) * (h.vida / h.vidaMax), 0);
+  score += (valorTime(mt) - valorTime(mi)) * 10;
+  score += (mt.mana - mi.mana) * 0.3;
+  // penaliza deixar herói exposto ao alcance de um inimigo que já está no tabuleiro — não é adivinhar a jogada do adversário, é geometria visível
+  for (const h of mt.campo) {
+    if (mi.campo.some(o => dist(h.pos, o.pos) <= o.alc)) score -= (h.vidaMax <= 1 ? 12 : 4);
+  }
+  for (const [pc, pr] of PONTOS_MANA) {
+    if (mt.campo.some(h => h.pos[0] === pc && h.pos[1] === pr)) score += 6;
+    if (mi.campo.some(h => h.pos[0] === pc && h.pos[1] === pr)) score -= 6;
+  }
+  // puxão leve pra avançar rumo à Base inimiga — sem isso a IA prefere
+  // "empatar com segurança" e nunca pressiona de verdade, deixando a
+  // Mana empoçar. Fraco o bastante pra nunca vencer a penalidade de
+  // exposição quando a troca é ruim, forte o bastante pra desempatar
+  // a favor de avançar quando não há risco.
+  for (const h of mt.campo) score -= dist(h.pos, baseMaisPerto(h.pos, inimigo)) * 0.5;
+  if (estado.fim === t) score += 10000;
+  else if (estado.fim === inimigo) score -= 10000;
+  return score;
+}
+
+/* Gera até algumas ações candidatas pro herói `h` (lido do T ATUAL —
+   nunca guarda referência pra reusar depois de re-clonar). Devolve
+   descritores simples (dados, não closures) pra evitar referenciar
+   objetos de uma cópia que já foi descartada. */
+function candidatosAcaoHeroi(h) {
+  const candidatos = [];
+  const inimigo = 1 - h.t;
+
+  const alvoHab = melhorAlvoHabilidade(h);
+  if (alvoHab) candidatos.push({ tipo: "habilidade", c: alvoHab[0], r: alvoHab[1] });
+
+  if (h.cura) {
+    const ac = alvosCura(h);
+    if (ac.aliados.length) {
+      const alvo = ac.aliados.slice().sort((a, b) => (b.vidaMax - b.vida) - (a.vidaMax - a.vida))[0];
+      candidatos.push({ tipo: "curar", alvoUid: alvo._uid });
+    }
+  } else {
+    const av = alvosAtaque(h);
+    if (av.herois.length) {
+      const alvo = av.herois.slice().sort((a, b) => pesoAlvo(b) - pesoAlvo(a) || a.vida - b.vida)[0];
+      candidatos.push({ tipo: "ataca", alvoUid: alvo._uid });
+    }
+    if (av.base !== null) candidatos.push({ tipo: "atacaBase", timeAlvo: av.base });
+  }
+
+  const opcoesMov = alcanceMovimento(h);
+  if (opcoesMov.length) {
+    const alvos = alvosPotenciaisDificil(h);
+    const inimigos = T.times[inimigo].campo;
+    const pontuadas = opcoesMov.map(p => {
+      const exposicao = h.cura ? 0 : inimigos.filter(o => dist(p, o.pos) <= o.alc).length;
+      let melhorPontos = -Infinity;
+      for (const alvo of alvos) {
+        let pontos = alvo.prioridade;
+        if (dist(p, alvo.pos) <= h.alc) pontos += 500;
+        pontos -= distReal(p, alvo.pos, h) * 5;
+        pontos -= exposicao * (h.vidaMax <= 1 ? 40 : 8);
+        if (pontos > melhorPontos) melhorPontos = pontos;
+      }
+      return { p, pontos: melhorPontos };
+    }).sort((a, b) => b.pontos - a.pontos);
+    // as 2 melhores casas de destino — dá pra IA comparar "avançar e arriscar" vs "posição mais segura"
+    for (const { p } of pontuadas.slice(0, 2)) candidatos.push({ tipo: "mover", c: p[0], r: p[1] });
+  }
+
+  candidatos.push({ tipo: "passar" });   // sempre existe a opção de não fazer nada
+  return candidatos;
+}
+
+/* Executa um descritor sobre `h` (sempre lido do T corrente) e devolve
+   o log de ações reais que ocorreram — usado tanto na simulação quanto
+   pra reproduzir de verdade a jogada vencedora depois. */
+function executarDescritor(h, desc) {
+  const inimigo = 1 - h.t, log = [];
+  if (desc.tipo === "habilidade") {
+    if (usarHabilidade(h, desc.c, desc.r)) log.push({ tipo: "habilidade", heroUid: h._uid, c: desc.c, r: desc.r });
+  } else if (desc.tipo === "curar") {
+    const alvo = T.times[h.t].campo.find(x => x._uid === desc.alvoUid);
+    if (alvo) { curar(h, alvo); log.push({ tipo: "curar", heroUid: h._uid, alvoUid: alvo._uid }); }
+  } else if (desc.tipo === "ataca") {
+    const alvo = T.times[inimigo].campo.find(x => x._uid === desc.alvoUid);
+    if (alvo) { ataca(h, alvo); log.push({ tipo: "ataca", heroUid: h._uid, alvoUid: alvo._uid }); }
+  } else if (desc.tipo === "atacaBase") {
+    atacaBase(h, desc.timeAlvo);
+    log.push({ tipo: "atacaBase", heroUid: h._uid, timeAlvo: desc.timeAlvo });
+  } else if (desc.tipo === "mover") {
+    move(h, desc.c, desc.r);
+    log.push({ tipo: "move", heroUid: h._uid, c: desc.c, r: desc.r });
+    if (!h.atacou) {
+      if (h.cura) {
+        const ac = alvosCura(h);
+        if (ac.aliados.length) {
+          const alvo = ac.aliados.slice().sort((a, b) => (b.vidaMax - b.vida) - (a.vidaMax - a.vida))[0];
+          curar(h, alvo); log.push({ tipo: "curar", heroUid: h._uid, alvoUid: alvo._uid });
+        }
+      } else {
+        const av = alvosAtaque(h);
+        if (av.herois.length) {
+          const alvo = av.herois.slice().sort((a, b) => pesoAlvo(b) - pesoAlvo(a) || a.vida - b.vida)[0];
+          ataca(h, alvo); log.push({ tipo: "ataca", heroUid: h._uid, alvoUid: alvo._uid });
+        } else if (av.base !== null) {
+          atacaBase(h, av.base); log.push({ tipo: "atacaBase", heroUid: h._uid, timeAlvo: av.base });
+        }
+      }
+    }
+  }
+  return log;
+}
+
+/* Busca em feixe (beam search): em vez de cada herói escolher a
+   própria ação de forma gananciosa, testa as opções de cada um sobre
+   VÁRIOS estados-candidatos em paralelo (o feixe) e só carrega adiante
+   os `largura` melhores depois de cada herói agir. No fim, sobra a
+   melhor sequência completa de ações do turno inteiro. Largura pequena
+   de propósito — o que mantém rápido sem ficar burro. */
+function beamSearchAcoes(t, largura) {
+  const ordemUids = [...T.times[t].campo].sort((a, b) => pesoAlvo(b) - pesoAlvo(a)).map(h => h._uid);
+  let feixe = [{ snapshot: structuredClone(T), log: [] }];
+  for (const uid of ordemUids) {
+    const proxFeixe = [];
+    for (const ramo of feixe) {
+      T = structuredClone(ramo.snapshot);
+      const h = T.times[t].campo.find(x => x._uid === uid);
+      if (!h || T.fim !== null) { proxFeixe.push(ramo); continue; }
+      for (const desc of candidatosAcaoHeroi(h)) {
+        T = structuredClone(ramo.snapshot);
+        const hh = T.times[t].campo.find(x => x._uid === uid);
+        if (!hh) continue;
+        const entradas = executarDescritor(hh, desc);
+        proxFeixe.push({ snapshot: structuredClone(T), log: [...ramo.log, ...entradas] });
+      }
+    }
+    proxFeixe.sort((a, b) => avaliarEstado(b.snapshot, t) - avaliarEstado(a.snapshot, t));
+    feixe = proxFeixe.slice(0, Math.max(1, largura));
+  }
+  return feixe.map(r => ({ score: avaliarEstado(r.snapshot, t), log: r.log })).sort((a, b) => b.score - a.score);
+}
+
+/* Poucos planos de invocação pra testar (não invocar nada, ou investir
+   forte) — cada um vira o ponto de partida de uma busca em feixe
+   separada, e o conjunto todo (plano de invocação + turno de ações)
+   que pontuar melhor é o escolhido. */
+function gerarPlanosInvocacao(t, estadoReal) {
+  const tm = estadoReal.times[t];
+  const reserva = tm.campo.length;
+  const acessiveis = tm.bench.filter(id => ARQUETIPOS[HERO_ARQ[id]].custo <= tm.mana - reserva);
+  const planos = [[]];   // sempre testa também "não invocar nada"
+  if (acessiveis.length) {
+    const cels = casasDeInvocacao(t).slice().sort((a, b) => dist(a, CENTRO) - dist(b, CENTRO));
+    if (cels.length) {
+      const ordenado = acessiveis.slice().sort((a, b) => ARQUETIPOS[HERO_ARQ[b]].custo - ARQUETIPOS[HERO_ARQ[a]].custo);
+      const plano = []; let manaRestante = tm.mana; const usados = new Set();
+      for (const cel of cels) {
+        const escolhido = ordenado.find(id => !usados.has(id) && ARQUETIPOS[HERO_ARQ[id]].custo <= manaRestante - reserva);
+        if (!escolhido) continue;
+        plano.push({ id: escolhido, c: cel[0], r: cel[1] });
+        manaRestante -= ARQUETIPOS[HERO_ARQ[escolhido]].custo;
+        usados.add(escolhido);
+      }
+      if (plano.length) planos.push(plano);
+    }
+  }
+  return planos;
+}
+
+/* Reproduz de verdade (com animação) o log de ações vencedor da
+   simulação. `mapaSimParaReal` traduz o _uid que um herói tinha DENTRO
+   da simulação pro _uid do herói de verdade — só é preciso pra quem
+   foi invocado durante o próprio plano (heróis que já estavam em campo
+   mantêm o mesmo _uid nos dois lados, não precisam de tradução). */
+async function replayLogReal(t, log, mapaSimParaReal) {
+  const resolver = uid => mapaSimParaReal.has(uid) ? mapaSimParaReal.get(uid) : uid;
+  for (const ent of log) {
+    if (T.fim !== null) break;
+    const h = T.times[t].campo.find(x => x._uid === resolver(ent.heroUid));
+    if (!h) continue;
+    if (ent.tipo === "move") { if (!h.moveu) move(h, ent.c, ent.r); }
+    else if (ent.tipo === "ataca") {
+      const alvo = T.times[1 - t].campo.find(x => x._uid === resolver(ent.alvoUid));
+      if (alvo && !h.atacou) ataca(h, alvo);
+    } else if (ent.tipo === "atacaBase") {
+      if (!h.atacou) atacaBase(h, ent.timeAlvo);
+    } else if (ent.tipo === "curar") {
+      const alvo = T.times[t].campo.find(x => x._uid === resolver(ent.alvoUid));
+      if (alvo && !h.atacou) curar(h, alvo);
+    } else if (ent.tipo === "habilidade") {
+      if (habDisponivel(h)) usarHabilidade(h, ent.c, ent.r);
+    }
+    render();
+    await espera(280);
+  }
+}
+
+async function jogaCpuJagerLaramais(t) {
+  const real = T;
+  const planosInv = gerarPlanosInvocacao(t, real);
+  let melhor = null;   // { invPlano, uidsInvocados, log, score }
+  for (const invPlano of planosInv) {
+    T = structuredClone(real);
+    simulando = true;
+    const uidsInvocados = invPlano.map(({ id, c, r }) => { invoca(id, c, r); const oc = ocupante(c, r); return oc ? oc._uid : null; });
+    const ramos = beamSearchAcoes(t, 3);
+    simulando = false;
+    if (ramos.length && (!melhor || ramos[0].score > melhor.score)) {
+      melhor = { invPlano, uidsInvocados, log: ramos[0].log, score: ramos[0].score };
+    }
+  }
+  T = real;
+  simulando = false;
+  if (!melhor) return;
+
+  const mapaSimParaReal = new Map();
+  for (let i = 0; i < melhor.invPlano.length; i++) {
+    const { id, c, r } = melhor.invPlano[i];
+    invoca(id, c, r);
+    await espera(380);
+    const real2 = ocupante(c, r);
+    if (real2 && melhor.uidsInvocados[i] != null) mapaSimParaReal.set(melhor.uidsInvocados[i], real2._uid);
+  }
+  await replayLogReal(t, melhor.log, mapaSimParaReal);
+}
+
 async function jogaCpu() {
   const t = T.vez;
   if (!T || T.fim !== null || t !== T.cpuTime) return;
   await espera(500);
-  if (T.cpuDificuldade === "dificil") await jogaCpuDificil(t);
+  if (T.cpuDificuldade === "jagerlaramais") await jogaCpuJagerLaramais(t);
+  else if (T.cpuDificuldade === "dificil") await jogaCpuDificil(t);
   else await jogaCpuNormal(t);
   await espera(400);
   if (T.fim === null) encerraTurno();
