@@ -122,7 +122,7 @@ button{font-family:var(--ui);cursor:pointer;border:none;background:none;color:in
   font-size:10px;font-weight:700;color:#fff;background:rgba(0,0,0,.72);border-radius:6px;
   padding:1px 5px;white-space:nowrap;letter-spacing:.02em;pointer-events:none}
 .peca .esc{position:absolute;top:-6px;right:-4px;font-size:11px;color:#8CE0F2}
-.peca .stun{position:absolute;top:-6px;left:-4px;font-size:11px}
+.peca .status{position:absolute;top:-6px;left:-4px;display:flex;gap:2px;font-size:11px}
 
 /* ───── PAINEL ───── */
 #painel{flex:none;border-top:1px solid var(--line);padding:8px 10px calc(8px + var(--safe))}
@@ -468,6 +468,10 @@ const MAPAS = {
       }
       return obst.filter(([c, r]) => dist(CENTRO, [c, r]) <= 7 && dist(CENTRO, [c, r]) > 1);
     },
+    // teste: pontos de Mana bem mais perto do meio do campo (e mais longe
+    // das Bases) que o padrão dos outros mapas — o controle desses pontos
+    // deve ser o foco do "mid game" aqui.
+    fatorPontosMana: 0.8,
   },
 };
 
@@ -499,13 +503,17 @@ function construirMapa(id) {
   SPAWN2 = [spawn0b, rotacionar180(spawn0b)];
   SPAWN_SET = new Set([...SPAWN, ...SPAWN2].map(([c, r]) => kk(c, r)));
 
-  /* 2 pontos de Mana — um mais perto de cada território, no eixo
-     central. Quem tiver um herói em cima no início do turno ganha +1
-     de Mana naquele turno (não precisa ser "dono" do ponto). */
+  /* 2 pontos de Mana — um mais perto de cada território, no eixo central,
+     a uma fração do caminho até o CENTRO (padrão 0.55: perto do próprio
+     território). Quem tiver um herói em cima no início do turno ganha +1
+     de Mana naquele turno (não precisa ser "dono" do ponto). Um mapa pode
+     sobrescrever `fatorPontosMana` pra puxar os pontos mais pro meio do
+     campo — usado hoje só nas Ruínas Enevoadas, como teste. */
   const cMinL = Math.min(..._linhaCentro), cMaxL = Math.max(..._linhaCentro);
+  const fatorPM = def.fatorPontosMana ?? 0.55;
   PONTOS_MANA = [
-    [Math.round(cMinL + (CENTRO[0] - cMinL) * 0.55), RAIO],
-    [Math.round(cMaxL - (cMaxL - CENTRO[0]) * 0.55), RAIO],
+    [Math.round(cMinL + (CENTRO[0] - cMinL) * fatorPM), RAIO],
+    [Math.round(cMaxL - (cMaxL - CENTRO[0]) * fatorPM), RAIO],
   ];
   PONTOS_MANA_SET = new Set(PONTOS_MANA.map(([c, r]) => kk(c, r)));
 
@@ -588,13 +596,13 @@ const HABILIDADES = {
   medic:   { nome: "Adrenalina",          custo: 4, dmg: 0,
     desc: "Reseta um aliado adjacente: ele ganha uma ação extra neste turno (pode mover e agir de novo)." },
 };
-const GATILHO_HAB = 10;
+const GATILHO_HAB = 8;
 function habilidadeDe(h) { return HABILIDADES[h.arq]; }
 function habDisponivel(h) {
   // Mover não impede usar a habilidade depois — só já ter atacado/curado
-  // (ou já ter usado a própria habilidade, que também marca "atacou") ou
-  // estar Exausto é que bloqueia.
-  if (!h || h.atacou || h.exausto) return false;
+  // (ou já ter usado a própria habilidade, que também marca "atacou"),
+  // estar Exausto ou estar Atordoado é que bloqueia.
+  if (!h || h.atacou || h.exausto || h.atordoado) return false;
   const tm = T.times[h.t], hab = habilidadeDe(h);
   return !!hab && tm.mana >= GATILHO_HAB && tm.mana >= hab.custo;
 }
@@ -620,6 +628,7 @@ function criarHeroi(id, t, pos) {
     movTotal: arq.movTotal, movAtaque: arq.movAtaque, cura: arq.cura,
     moveu: false, atacou: false,
     intocavel: false, exausto: false, exaustoPendente: false,
+    atordoado: false, atordoadoPendente: false,
     _uid: _uidSeq++,   // identidade estável pra IA Jager Laramais rastrear heróis entre simulação e jogo real
   };
 }
@@ -717,7 +726,7 @@ function cartaHeroi(id, inst) {
     </div>
     <p class="movTxt">👣 anda até ${arq.movTotal} casas e ainda pode ${arq.cura ? "curar" : "atacar"} depois, não importa quantas casas andou (contanto que ainda tenha Mana e não tenha agido)</p>
     <p class="movTxt">◆ Invocar custa ${arq.custo} · mover custa 1 · ${arq.cura ? "curar" : "atacar"} custa 1 · abater um inimigo devolve 1</p>
-    ${hab ? `<div class="habCx"><b>${hab.nome}</b> <i>— ${hab.custo}◆, requer 10◆ estocado</i><p>${hab.desc}</p></div>` : ""}`;
+    ${hab ? `<div class="habCx"><b>${hab.nome}</b> <i>— ${hab.custo}◆, requer ${GATILHO_HAB}◆ estocado</i><p>${hab.desc}</p></div>` : ""}`;
 }
 function mostraCarta(id, inst) {
   abre(`${cartaHeroi(id, inst)}<button class="grande" id="ok">Fechar</button>`, () => fecha());
@@ -731,7 +740,7 @@ function telaAbertura() {
     ilimitadas. Invocar, mover e atacar (ou curar) gastam Mana — abater um herói
     inimigo devolve 1 de Mana pro seu time. Dominem os 2 pontos de Mana e derrubem
     a Base inimiga (cluster de hexágonos com o símbolo de sucata no meio). Ao
-    estocar 10 de Mana, cada herói ganha acesso à sua habilidade especial.</p>
+    estocar ${GATILHO_HAB} de Mana, cada herói ganha acesso à sua habilidade especial.</p>
     <p style="margin-top:10px">${lista}</p>
     <button class="grande" id="okPvp">Dois jogadores (mesmo aparelho)</button>
     <button class="grande" id="okCpu">Jogar contra a CPU</button>
@@ -1069,11 +1078,19 @@ function iniciaTurno() {
   tm.mana += 5 + bonusPontosMana(t);
   tm.campo.forEach(h => {
     h.moveu = false; h.atacou = false;
-    // Avanço Fantasma do Runner: Inalvejável durante o turno do
-    // adversário (que já passou, se chegamos até aqui) e Exausto só
-    // neste turno que está começando agora.
-    if (h.exaustoPendente) { h.exausto = true; h.exaustoPendente = false; h.intocavel = false; }
+    // Avanço Fantasma do Runner: Inalvejável desde o uso da habilidade até
+    // o fim DESTE turno que está começando agora (Exausto só neste turno —
+    // pode mover livremente, só não pode atacar/usar habilidade). Quem
+    // libera o intocavel é encerraTurno(), quando esse turno Exausto de
+    // fato termina — clarear os dois já aqui deixaria o Runner alvejável
+    // de novo no meio do próprio turno em que ainda não pode revidar.
+    if (h.exaustoPendente) { h.exausto = true; h.exaustoPendente = false; }
     else { h.exausto = false; }
+    // Atordoado pelo Empurrão Estratégico do Soldier (colidiu com outro
+    // inimigo): só no turno seguinte ao golpe, sem mover/atacar/curar/usar
+    // habilidade — bem mais restritivo que o Exausto do Runner.
+    if (h.atordoadoPendente) { h.atordoado = true; h.atordoadoPendente = false; }
+    else { h.atordoado = false; }
   });
   tm.invocouEm = new Set();
   selecionado = null; bancoSel = null; modoHabilidade = false; confirmacaoPendente = null;
@@ -1096,6 +1113,9 @@ function telaPasseTurno() {
     <button class="grande" id="ok">Começar meu turno</button>`, () => { fecha(); iniciaTurno(); });
 }
 function encerraTurno() {
+  // o Runner que usou Avanço Fantasma fica Inalvejável até aqui — o turno
+  // Exausto que estava rolando agora termina de vez, então perde a proteção.
+  T.times[T.vez].campo.forEach(h => { if (h.exausto) h.intocavel = false; });
   T.vez = 1 - T.vez;
   if (T.vez === 0) T.rodada++;
   checaFim();
@@ -1148,7 +1168,7 @@ function invoca(id, c, r) {
    casas o movimento cobre, o herói continua podendo atacar (ou curar)
    depois, contanto que ainda não tenha usado a ação neste turno. */
 function alcanceMovimento(h) {
-  if (h.moveu) return [];
+  if (h.moveu || h.atordoado) return [];
   if (T.times[h.t].mana < 1) return [];
   const out = [];
   for (let r = 0; r < LINS; r++) for (let c = 0; c < COLS; c++) {
@@ -1161,7 +1181,7 @@ function alcanceMovimento(h) {
    desenhar a área no tabuleiro, ex.: o alcance 3 do Sniper aparece
    inteiro mesmo em casas que ele nunca conseguiria alcançar andando. */
 function raioAcao(h) {
-  if (h.atacou) return [];
+  if (h.atacou || h.exausto || h.atordoado) return [];
   if (T.times[h.t].mana < 1) return [];
   const out = [];
   for (let r = 0; r < LINS; r++) for (let c = 0; c < COLS; c++) {
@@ -1170,7 +1190,7 @@ function raioAcao(h) {
   return out;
 }
 function alvosAtaque(h) {
-  if (h.cura || h.atacou || h.exausto) return { herois: [], base: null };
+  if (h.cura || h.atacou || h.exausto || h.atordoado) return { herois: [], base: null };
   if (T.times[h.t].mana < 1) return { herois: [], base: null };
   const inimigo = 1 - h.t;
   const herois = T.times[inimigo].campo.filter(o => !o.intocavel && dist(h.pos, o.pos) <= h.alc);
@@ -1178,7 +1198,7 @@ function alvosAtaque(h) {
   return { herois, base };
 }
 function alvosCura(h) {
-  if (!h.cura || h.atacou) return { aliados: [] };
+  if (!h.cura || h.atacou || h.atordoado) return { aliados: [] };
   if (T.times[h.t].mana < 1) return { aliados: [] };
   const aliados = T.times[h.t].campo.filter(o => o !== h && dist(h.pos, o.pos) <= h.alc);
   return { aliados };
@@ -1351,9 +1371,12 @@ function usarHabilidade(h, c, r) {
     if (T.times[inimigo].campo.includes(alvo)) {
       const colisao = empurrar(alvo, h.pos, 2);
       if (colisao.bateu && colisao.tipo === "unidade" && colisao.unidade.t === alvo.t) {
-        // bateu em OUTRO inimigo: o empurrado leva +1, quem tomou a colisão leva 2
+        // bateu em OUTRO inimigo: o empurrado leva +1, quem tomou a colisão
+        // leva 2 de dano E fica Atordoado (não move, não ataca, não cura,
+        // não usa habilidade no próprio turno seguinte) — some ao dano, não troca por ele
         if (T.times[inimigo].campo.includes(alvo)) dano(h, alvo, 1);
         dano(h, colisao.unidade, 2);
+        if (T.times[inimigo].campo.includes(colisao.unidade)) colisao.unidade.atordoadoPendente = true;
       } else if (colisao.bateu) {
         // bateu numa estrutura (obstáculo/Base/borda do mapa), ou num
         // aliado do Soldier — trata como parede: só o empurrado leva dano
@@ -1544,13 +1567,16 @@ function render() {
     const art = RETRATO(h.id);
     let cls = "peca t" + h.t;
     if (h === selecionado) cls += " selecionada";
-    if (h.moveu && h.atacou) cls += " agiu";
+    if ((h.moveu && h.atacou) || h.atordoado) cls += " agiu";
     if (T.times[h.t].mana >= GATILHO_HAB) cls += " habilitavel";
     html += `<div class="${cls}" style="left:${left + 4}px;top:${top + 8}px;${art ? `background-image:url('${art}')` : ""}"
       data-c="${h.pos[0]}" data-r="${h.pos[1]}" data-hid="${h.id}" data-piece="1" title="${HEROIS[h.id].n}">
       ${art ? "" : HEROIS[h.id].n[0]}
-      ${h.intocavel ? '<span class="stun" title="Inalvejável">👻</span>' : ""}
-      ${h.exausto ? '<span class="stun" title="Exausto">💤</span>' : ""}
+      <div class="status">
+        ${h.intocavel ? '<span title="Inalvejável">👻</span>' : ""}
+        ${h.exausto ? '<span title="Exausto">💤</span>' : ""}
+        ${h.atordoado ? '<span title="Atordoado">😵</span>' : ""}
+      </div>
       <div class="vidabar"><i style="width:${Math.max(0, 100 * h.vida / h.vidaMax)}%"></i></div>
       <div class="vidaNum">${Math.max(0, h.vida)}/${h.vidaMax}</div>
     </div>`;
@@ -1631,8 +1657,9 @@ function render() {
       ${arq.cura ? "cura total +1" : "ataque " + arq.dano} · alcance ${arq.alcance}
       <br>👣 anda até ${arq.movTotal} · mover/${arq.cura ? "curar" : "atacar"} custam 1◆ cada`;
     if (hab) {
-      infoHtml += `<br><b style="color:var(--mana)">${hab.nome}</b> (${hab.custo}◆, requer 10◆ estocado) — ${hab.desc}`;
+      infoHtml += `<br><b style="color:var(--mana)">${hab.nome}</b> (${hab.custo}◆, requer ${GATILHO_HAB}◆ estocado) — ${hab.desc}`;
       if (h.exausto) infoHtml += ` <i>— exausto neste turno</i>`;
+      if (h.atordoado) infoHtml += ` <i>— atordoado neste turno</i>`;
     }
     if (confirmacaoPendente) {
       infoHtml += `<br><b style="color:var(--brass)">Toque no ${confirmacaoPendente.tipo === "cura" ? "✚" : "⚔"} sobre a casa pra confirmar</b> — qualquer outro clique cancela.`;
