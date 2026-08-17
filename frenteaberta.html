@@ -1527,7 +1527,28 @@ function casasVisiveis(t) {
    linha: a cena só lê o mesmo estado (T, selecionado, etc.) e chama as
    mesmas funções que o board em HTML já chamava (cliqueHex, mostraCarta,
    confirmarAcao). */
-let PGAME = null, PSCENE = null, _pendenteDesenhoTabuleiro = null, CORES = null;
+let PGAME = null, PSCENE = null, _pendenteDesenhoTabuleiro = null, CORES = null, _mascarasHex = [];
+/* Tiles de terreno gerados (ver arte/tiles-hex/README.md) — caminho relativo à
+   própria frenteaberta.html. "habitado" ainda não tem arte: cai no preenchimento
+   de cor chapada de antes até alguém gerar esse tile. */
+const TILES_TERRENO = {
+  "hex-base": "arte/tiles-hex/_otimizado/hex-base.jpg",
+  "hex-obstaculo": "arte/tiles-hex/_otimizado/hex-obstaculo.jpg",
+  "hex-invocacao": "arte/tiles-hex/_otimizado/hex-invocacao.jpg",
+  "hex-mana": "arte/tiles-hex/_otimizado/hex-mana.jpg",
+  "hex-grama": "arte/tiles-hex/_otimizado/hex-grama.jpg",
+  "hex-wasteland": "arte/tiles-hex/_otimizado/hex-wasteland.jpg",
+};
+/* Anel de terreno por distância do CENTRO (ver direção de arte: base → arredores
+   habitados → ferragem/obstáculo → grama alta → wasteland no meio do mapa). Ferragem
+   já é tratada à parte (é o próprio OBST_SET); aqui só decide entre os 3 anéis "de
+   piso comum". */
+function anelTerreno(c, r) {
+  const d = dist(CENTRO, [c, r]) / RAIO;
+  if (d < 0.4) return "hex-wasteland";
+  if (d < 0.7) return "hex-grama";
+  return null;   // "anel habitado" — sem arte ainda
+}
 function corDeVar(cs, nome) { return parseInt(cs.getPropertyValue(nome).trim().replace("#", ""), 16); }
 function misturaCor(a, b, f) {
   const ar = (a >> 16) & 255, ag = (a >> 8) & 255, ab = a & 255;
@@ -1542,6 +1563,22 @@ function escurece(cor, f) {
    quadrado; só a arte (textura/gradiente) é que ainda não existe. */
 const HEX_PTS = [0, -29, 25, -15, 25, 15, 0, 29, -25, 15, -25, -15];
 function desenhaHex(S, cx, cy, fill, alpha) { return S.add.polygon(cx, cy, HEX_PTS, fill, alpha); }
+/* Tile de imagem recortado no formato do hexágono (technique de mask do Phaser —
+   não mexe no arquivo original, só "revela" a fatia hexagonal dele na tela) e
+   escalado tipo background-size:cover (preenche a caixa 52x60 sem distorcer,
+   cortando só o excesso, igual o CSS já fazia com os retratos dos heróis). */
+function desenhaHexTextura(S, cx, cy, chave) {
+  const img = S.add.image(cx, cy, chave).setDepth(0);
+  img.setScale(Math.max(52 / img.width, 60 / img.height));
+  const pts = [];
+  for (let i = 0; i < HEX_PTS.length; i += 2) pts.push({ x: cx + HEX_PTS[i], y: cy + HEX_PTS[i + 1] });
+  const g = S.make.graphics(undefined, false);
+  g.fillStyle(0xffffff);
+  g.fillPoints(pts, true);
+  img.setMask(g.createGeometryMask());
+  _mascarasHex.push(g);
+  return img;
+}
 function garanteTabuleiroPhaser() {
   const w = COLS * 52 + 26, h = LINS * 45 + 20;
   if (!PGAME) {
@@ -1554,11 +1591,16 @@ function garanteTabuleiroPhaser() {
     PGAME = new Phaser.Game({
       type: Phaser.AUTO, parent: "board", width: w, height: h, transparent: true,
       input: { touch: { capture: false } },   // não pode roubar o toque: #palco precisa continuar rolando/arrastando no dedo
-      scene: { create() {
-        PSCENE = this;
-        PSCENE.input.topOnly = true;   // só a forma mais "de cima" no ponto tocado recebe o clique (hex embaixo da peça não dispara junto)
-        if (_pendenteDesenhoTabuleiro) { const fn = _pendenteDesenhoTabuleiro; _pendenteDesenhoTabuleiro = null; fn(); }
-      } },
+      scene: {
+        preload() {
+          Object.entries(TILES_TERRENO).forEach(([chave, url]) => this.load.image(chave, url));
+        },
+        create() {
+          PSCENE = this;
+          PSCENE.input.topOnly = true;   // só a forma mais "de cima" no ponto tocado recebe o clique (hex embaixo da peça não dispara junto)
+          if (_pendenteDesenhoTabuleiro) { const fn = _pendenteDesenhoTabuleiro; _pendenteDesenhoTabuleiro = null; fn(); }
+        },
+      },
     });
     PGAME.canvas.style.touchAction = "pan-x pan-y";
   } else if (PGAME.scale.width !== w || PGAME.scale.height !== h) {
@@ -1589,6 +1631,8 @@ function desenhaTabuleiroPhaser(dados) {
   const { timeDeVisao, vis, alcM, alcAcao, av, ac, livresInvoc, alvosHab } = dados;
   const S = PSCENE, C = CORES;
   S.children.removeAll(true);   // redesenha tudo do zero a cada render(), igual o innerHTML fazia antes
+  _mascarasHex.forEach(g => g.destroy());   // as máscaras dos tiles com textura vivem fora da display list, removeAll não pega elas
+  _mascarasHex = [];
 
   for (let r = 0; r < LINS; r++) for (let c = 0; c < COLS; c++) {
     if (!valida(c, r)) continue;
@@ -1601,14 +1645,21 @@ function desenhaTabuleiroPhaser(dados) {
     const ehBonus = PONTOS_MANA_SET.has(kk(c, r));
     const fogado = !vis.has(kk(c, r));
 
-    let fill = (c + r) % 2 ? escurece(C.terra, 1.05) : escurece(C.terra, 0.95);
-    if (ehBase0) fill = misturaCor(C.terra, C.azul, 0.4);
-    if (ehBase1) fill = misturaCor(C.terra, C.carmim, 0.4);
-    if (ehObst) fill = 0xC0754A;
-    if (ehBonus) fill = misturaCor(C.terra, C.energia, 0.45);
-    if (fogado) fill = escurece(fill, 0.55);
+    let textura = null;
+    if (ehBase0 || ehBase1) textura = "hex-base";
+    else if (ehObst) textura = "hex-obstaculo";
+    else if (ehSpawn) textura = "hex-invocacao";
+    else if (ehBonus) textura = "hex-mana";
+    else textura = anelTerreno(c, r);   // "anel habitado" (sem arte ainda) volta null
 
-    desenhaHex(S, cx, cy, fill, 1).setStrokeStyle(1, C.linha, 0.6).setDepth(0);
+    if (textura) {
+      desenhaHexTextura(S, cx, cy, textura);
+    } else {
+      const fill = (c + r) % 2 ? escurece(C.terra, 1.05) : escurece(C.terra, 0.95);
+      desenhaHex(S, cx, cy, fill, 1).setStrokeStyle(1, C.linha, 0.6).setDepth(0);
+    }
+    if (fogado) desenhaHex(S, cx, cy, 0x000000, 0.45).setDepth(0.5);   // névoa funciona igual em cima de textura ou cor chapada
+
     if (!ehObst) {
       // zona de toque separada da forma visual: Geom.Polygon como hitArea tem um
       // bug de coordenada no Phaser (testado — acaba acertando o hex vizinho), um
@@ -1616,10 +1667,6 @@ function desenhaTabuleiroPhaser(dados) {
       const zona = S.add.rectangle(cx, cy, 46, 50, 0xffffff, 0).setDepth(0);
       ligaTapUnico(zona, () => cliqueHex(c, r));
     }
-
-    if (ehSpawn) S.add.text(cx, top + 6, "✦", { fontSize: "13px", color: "#D4A24C" }).setOrigin(0.5).setDepth(1);
-    if (ehObst) S.add.text(cx, cy, "🛢️", { fontSize: "20px" }).setOrigin(0.5).setDepth(1);
-    if (ehBonus) S.add.text(cx, cy, "◆", { fontSize: "16px", color: "#6BE23C" }).setOrigin(0.5).setDepth(1);
 
     if (alcAcao.some(([cc, rr]) => cc === c && rr === r))
       desenhaHex(S, cx, cy, 0, 0).setStrokeStyle(2, 0xD65A30, 0.65).setDepth(1);
