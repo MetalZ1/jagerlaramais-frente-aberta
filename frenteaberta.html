@@ -1537,6 +1537,11 @@ function misturaCor(a, b, f) {
 function escurece(cor, f) {
   return (Math.round(((cor >> 16) & 255) * f) << 16) | (Math.round(((cor >> 8) & 255) * f) << 8) | Math.round((cor & 255) * f);
 }
+/* Mesmo hexágono "pontudo em cima/embaixo" do clip-path CSS original (caixa
+   52x60), só que centrado em (0,0) — é a forma de verdade, não um placeholder
+   quadrado; só a arte (textura/gradiente) é que ainda não existe. */
+const HEX_PTS = [0, -29, 25, -15, 25, 15, 0, 29, -25, 15, -25, -15];
+function desenhaHex(S, cx, cy, fill, alpha) { return S.add.polygon(cx, cy, HEX_PTS, fill, alpha); }
 function garanteTabuleiroPhaser() {
   const w = COLS * 52 + 26, h = LINS * 45 + 20;
   if (!PGAME) {
@@ -1603,26 +1608,32 @@ function desenhaTabuleiroPhaser(dados) {
     if (ehBonus) fill = misturaCor(C.terra, C.energia, 0.45);
     if (fogado) fill = escurece(fill, 0.55);
 
-    const hex = S.add.rectangle(cx, cy, 50, 56, fill).setStrokeStyle(1, C.linha, 0.6).setDepth(0);
-    if (!ehObst) ligaTapUnico(hex, () => cliqueHex(c, r));
+    desenhaHex(S, cx, cy, fill, 1).setStrokeStyle(1, C.linha, 0.6).setDepth(0);
+    if (!ehObst) {
+      // zona de toque separada da forma visual: Geom.Polygon como hitArea tem um
+      // bug de coordenada no Phaser (testado — acaba acertando o hex vizinho), um
+      // retângulo simples inscrito no hexágono não tem esse problema.
+      const zona = S.add.rectangle(cx, cy, 46, 50, 0xffffff, 0).setDepth(0);
+      ligaTapUnico(zona, () => cliqueHex(c, r));
+    }
 
     if (ehSpawn) S.add.text(cx, top + 6, "✦", { fontSize: "13px", color: "#D4A24C" }).setOrigin(0.5).setDepth(1);
     if (ehObst) S.add.text(cx, cy, "🛢️", { fontSize: "20px" }).setOrigin(0.5).setDepth(1);
     if (ehBonus) S.add.text(cx, cy, "◆", { fontSize: "16px", color: "#6BE23C" }).setOrigin(0.5).setDepth(1);
 
     if (alcAcao.some(([cc, rr]) => cc === c && rr === r))
-      S.add.rectangle(cx, cy, 50, 56).setStrokeStyle(2, 0xD65A30, 0.65).setDepth(1);
+      desenhaHex(S, cx, cy, 0, 0).setStrokeStyle(2, 0xD65A30, 0.65).setDepth(1);
     if (!ehObst && alcM.some(([cc, rr]) => cc === c && rr === r))
-      S.add.rectangle(cx, cy, 50, 56, 0x3A9656, 0.35).setDepth(1);
+      desenhaHex(S, cx, cy, 0x3A9656, 0.35).setDepth(1);
     if (av.herois.some(o => o.pos[0] === c && o.pos[1] === r) ||
         (av.base !== null && BASES[av.base].some(([bc, br]) => bc === c && br === r)))
-      S.add.rectangle(cx, cy, 50, 56, 0xD64630, 0.35).setDepth(1);
+      desenhaHex(S, cx, cy, 0xD64630, 0.35).setDepth(1);
     if (ac.aliados.some(o => o.pos[0] === c && o.pos[1] === r))
-      S.add.rectangle(cx, cy, 50, 56, 0x3A9656, 0.35).setDepth(1);
+      desenhaHex(S, cx, cy, 0x3A9656, 0.35).setDepth(1);
     if (livresInvoc.some(([cc, rr]) => cc === c && rr === r))
-      S.add.rectangle(cx, cy, 50, 56, 0x3A9656, 0.35).setDepth(1);
+      desenhaHex(S, cx, cy, 0x3A9656, 0.35).setDepth(1);
     if (alvosHab.some(([cc, rr]) => cc === c && rr === r))
-      S.add.rectangle(cx, cy, 50, 56, 0x5FBF8A, 0.4).setStrokeStyle(2, 0x5FBF8A, 0.8).setDepth(1);
+      desenhaHex(S, cx, cy, 0x5FBF8A, 0.4).setStrokeStyle(2, 0x5FBF8A, 0.8).setDepth(1);
   }
 
   [0, 1].forEach(tt => T.times[tt].campo.forEach(h => {
