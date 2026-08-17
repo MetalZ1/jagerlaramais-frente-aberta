@@ -13,6 +13,14 @@
   --display:"Avenir Next Condensed","Helvetica Neue Condensed","Arial Narrow",Impact,sans-serif;
   --ui:-apple-system,"Avenir Next","Helvetica Neue",system-ui,sans-serif;
   --safe:env(safe-area-inset-bottom,0px);
+  /* Paleta só do TABULEIRO — mundo de gambiarra/sucata, tons claros de
+     chapa batida, com uma energia verde de cataclismo pingando pelas
+     frestas. O resto da tela (HUD, painéis, telas) continua na paleta
+     escura de sempre. */
+  --mapa-bg-1:#EAE0C4; --mapa-bg-2:#C7B78D;
+  --terra:#CBB78C; --terra-dark:#8F7A54;
+  --ferrugem-dark:#6E3B1F;
+  --energia:#6BE23C; --energia-2:#2E8B1E; --energia-glow:rgba(107,226,60,.4);
 }
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 html,body{height:100%;overscroll-behavior:none}
@@ -59,48 +67,50 @@ button{font-family:var(--ui);cursor:pointer;border:none;background:none;color:in
 /* ───── TABULEIRO ───── */
 #palco{position:relative;flex:1;overflow:auto;
   background:
-    radial-gradient(ellipse 900px 500px at 50% 20%,rgba(212,162,76,.05),transparent),
-    radial-gradient(ellipse at 50% 80%,var(--ground-3),var(--ground));
+    radial-gradient(ellipse 900px 500px at 50% 20%,var(--energia-glow),transparent 70%),
+    radial-gradient(ellipse at 50% 80%,var(--mapa-bg-1),var(--mapa-bg-2));
 }
 #board{position:relative;margin:26px auto;width:max-content;
-  filter:drop-shadow(0 10px 30px rgba(0,0,0,.5));
+  filter:drop-shadow(0 10px 26px rgba(50,38,16,.4));
 }
 .hex{
   position:absolute;width:52px;height:60px;
   clip-path:polygon(50% 0%,100% 25%,100% 75%,50% 100%,0% 75%,0% 25%);
-  background:var(--ground-2);border:1px solid var(--line-soft);
+  background:var(--terra);border:1px solid var(--terra-dark);
   display:flex;align-items:center;justify-content:center;
   transition:background .15s,filter .15s;
 }
-.hex.par{filter:brightness(1.06)}
-.hex.impar{filter:brightness(0.94)}
-.hex.zona0{background:linear-gradient(180deg,rgba(76,155,214,.07),var(--ground-2))}
-.hex.zona1{background:linear-gradient(180deg,rgba(212,91,78,.07),var(--ground-2))}
-.hex.base0{background:linear-gradient(180deg,rgba(76,155,214,.32),var(--ground-2));animation:pulso0 2.6s ease-in-out infinite}
-.hex.base1{background:linear-gradient(180deg,rgba(212,91,78,.32),var(--ground-2));animation:pulso1 2.6s ease-in-out infinite}
+.hex.par{filter:brightness(1.05)}
+.hex.impar{filter:brightness(0.95)}
+.hex.zona0{background:linear-gradient(180deg,rgba(76,155,214,.16),var(--terra))}
+.hex.zona1{background:linear-gradient(180deg,rgba(212,91,78,.16),var(--terra))}
+.hex.base0{background:linear-gradient(180deg,rgba(76,155,214,.42),var(--terra));animation:pulso0 2.6s ease-in-out infinite}
+.hex.base1{background:linear-gradient(180deg,rgba(212,91,78,.42),var(--terra));animation:pulso1 2.6s ease-in-out infinite}
 @keyframes pulso0{0%,100%{box-shadow:0 0 0 rgba(76,155,214,0)}50%{box-shadow:0 0 14px rgba(76,155,214,.55)}}
 @keyframes pulso1{0%,100%{box-shadow:0 0 0 rgba(212,91,78,0)}50%{box-shadow:0 0 14px rgba(212,91,78,.55)}}
-.hex.bonus{background:linear-gradient(180deg,var(--brass-glow),var(--ground-2))}
+/* pontos de Mana — os poços da energia verde de cataclismo que "vaza" pelo mapa */
+.hex.bonus{background:linear-gradient(180deg,var(--energia-glow),var(--terra));animation:pulsoEnergia 2.4s ease-in-out infinite}
+@keyframes pulsoEnergia{0%,100%{box-shadow:inset 0 0 6px rgba(107,226,60,.25)}50%{box-shadow:inset 0 0 18px rgba(107,226,60,.65)}}
 .hex.bonus .bonusIco{animation:flutua 2.2s ease-in-out infinite}
 @keyframes flutua{0%,100%{transform:translateY(0) scale(1);opacity:.6}50%{transform:translateY(-3px) scale(1.15);opacity:1}}
-.hex.alcance-mov{background:rgba(95,191,138,.22)}
-.hex.alcance-mov.comEspada{background:rgba(95,191,138,.34)}
-.hex.alcance-atk{background:rgba(255,106,90,.22)}
-.hex.raioAcao{box-shadow:inset 0 0 0 2px rgba(255,140,90,.55)}
-.hex .espadaIco{position:absolute;font-size:13px;color:#FFD98A;text-shadow:0 0 4px rgba(0,0,0,.8);
+.hex.alcance-mov{background:rgba(58,150,86,.32)}
+.hex.alcance-mov.comEspada{background:rgba(58,150,86,.46)}
+.hex.alcance-atk{background:rgba(214,70,48,.32)}
+.hex.raioAcao{box-shadow:inset 0 0 0 2px rgba(214,90,48,.65)}
+.hex .espadaIco{position:absolute;font-size:13px;color:#8B4A26;text-shadow:0 1px 2px rgba(255,255,255,.5);
   top:2px;right:4px}
 .hex.selecionavel{cursor:pointer}
-.hex .baseIco{font-size:18px;color:var(--brass);opacity:.9;text-shadow:0 0 8px rgba(212,162,76,.6)}
-.baseSimbolo{position:absolute;font-size:64px;line-height:1;pointer-events:none;transform:translate(-50%,-50%);text-shadow:0 0 14px rgba(0,0,0,.75);z-index:5;opacity:.85}
-.baseSimbolo.t0{color:#4c9bd6}
-.baseSimbolo.t1{color:#d45b4e}
-.hex.spawn{outline:2px dashed rgba(212,162,76,.6);outline-offset:-2px}
-.hex .spawnIco{font-size:15px;color:var(--brass);opacity:.8}
-.hex .bonusIco{font-size:15px;color:var(--brass);opacity:.7}
-.hex.obstaculo{background:linear-gradient(160deg,#2A2620,#171410);border-color:#3A3428;cursor:default}
+.hex .baseIco{font-size:18px;color:var(--brass-dim);opacity:.9;text-shadow:0 0 8px rgba(212,162,76,.4)}
+.baseSimbolo{position:absolute;font-size:64px;line-height:1;pointer-events:none;transform:translate(-50%,-50%);text-shadow:0 2px 10px rgba(50,38,16,.5),0 0 3px rgba(255,255,255,.4);z-index:5;opacity:.9}
+.baseSimbolo.t0{color:var(--azul)}
+.baseSimbolo.t1{color:var(--carmim)}
+.hex.spawn{outline:2px dashed rgba(138,106,47,.7);outline-offset:-2px}
+.hex .spawnIco{font-size:15px;color:var(--brass-dim);opacity:.9}
+.hex .bonusIco{font-size:15px;color:var(--energia-2);opacity:.9;text-shadow:0 0 5px var(--energia)}
+.hex.obstaculo{background:linear-gradient(160deg,#C0754A,#8A4C2A);border-color:var(--ferrugem-dark);cursor:default}
 .hex.obstaculo .obstIco{font-size:20px;filter:drop-shadow(0 2px 3px rgba(0,0,0,.6));opacity:.9}
 .hex.obstaculo.fogado .obstIco{opacity:.3}
-.hex.fogado{filter:brightness(.32) saturate(.5);transition:filter .3s}
+.hex.fogado{filter:brightness(.6) saturate(.45);transition:filter .3s}
 .hex.fogado.base0,.hex.fogado.base1{animation:none}
 .hex.fogado.bonus .bonusIco{animation:none;opacity:.25}
 
@@ -1556,7 +1566,7 @@ function render() {
     if (livresInvoc.some(([cc, rr]) => cc === c && rr === r)) cls += " alcance-mov selecionavel";
     if (alvosHab.some(([cc, rr]) => cc === c && rr === r)) cls += " alcance-hab selecionavel";
     let ico = "";
-    if (ehObst) ico += '<span class="obstIco">🪨</span>';
+    if (ehObst) ico += '<span class="obstIco">🛢️</span>';
     if (PONTOS_MANA_SET.has(kk(c, r))) ico += '<span class="bonusIco">◆</span>';
     if (ehSpawn) ico += '<span class="spawnIco">✦</span>';
     html += `<div class="${cls}" style="left:${left}px;top:${top}px" data-c="${c}" data-r="${r}">${ico}</div>`;
