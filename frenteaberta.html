@@ -228,10 +228,12 @@ button{font-family:var(--ui);cursor:pointer;border:none;background:none;color:in
 
 </style>
 
-<!-- Único recurso externo do jogo: biblioteca PeerJS, usada só pelo modo
-     "Jogar online" (conexão direta entre os dois aparelhos, sem servidor
-     próprio). O resto do jogo continua 100% autocontido. -->
+<!-- Recursos externos do jogo: PeerJS (modo "Jogar online", conexão direta
+     entre os dois aparelhos, sem servidor próprio) e Phaser (motor gráfico
+     do tabuleiro — em migração; ver comentário "Tabuleiro (motor Phaser)"
+     mais abaixo). Fora isso o jogo continua 100% autocontido, sem build. -->
 <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/phaser@3.80.1/dist/phaser.min.js"></script>
 
 <div id="app">
   <header id="hud">
@@ -1516,6 +1518,161 @@ function casasVisiveis(t) {
 }
 
 /* ───────────────────────── Render ───────────────────────── */
+/* ───────────────────────── Tabuleiro (motor Phaser) ─────────────────────────
+   Migração em andamento pro Phaser: hexágonos e peças agora são desenhados
+   por uma cena Phaser dentro de #board, em formas simples coloridas — ainda
+   sem arte de verdade (isso entra numa etapa seguinte, junto com câmera/
+   animações). O resto da UI (HUD, banco, botões, telas) continua HTML
+   normal; só o tabuleiro trocou de motor. A lógica do jogo não mudou uma
+   linha: a cena só lê o mesmo estado (T, selecionado, etc.) e chama as
+   mesmas funções que o board em HTML já chamava (cliqueHex, mostraCarta,
+   confirmarAcao). */
+let PGAME = null, PSCENE = null, _pendenteDesenhoTabuleiro = null, CORES = null;
+function corDeVar(cs, nome) { return parseInt(cs.getPropertyValue(nome).trim().replace("#", ""), 16); }
+function misturaCor(a, b, f) {
+  const ar = (a >> 16) & 255, ag = (a >> 8) & 255, ab = a & 255;
+  const br = (b >> 16) & 255, bg = (b >> 8) & 255, bb = b & 255;
+  return (Math.round(ar + (br - ar) * f) << 16) | (Math.round(ag + (bg - ag) * f) << 8) | Math.round(ab + (bb - ab) * f);
+}
+function escurece(cor, f) {
+  return (Math.round(((cor >> 16) & 255) * f) << 16) | (Math.round(((cor >> 8) & 255) * f) << 8) | Math.round((cor & 255) * f);
+}
+function garanteTabuleiroPhaser() {
+  const w = COLS * 52 + 26, h = LINS * 45 + 20;
+  if (!PGAME) {
+    const cs = getComputedStyle(document.documentElement);
+    CORES = {
+      terra: corDeVar(cs, "--terra"), azul: corDeVar(cs, "--azul"), carmim: corDeVar(cs, "--carmim"),
+      brass: corDeVar(cs, "--brass"), energia: corDeVar(cs, "--energia"), vivo: corDeVar(cs, "--vivo"),
+      dano: corDeVar(cs, "--dano"), linha: corDeVar(cs, "--line"),
+    };
+    PGAME = new Phaser.Game({
+      type: Phaser.AUTO, parent: "board", width: w, height: h, transparent: true,
+      input: { touch: { capture: false } },   // não pode roubar o toque: #palco precisa continuar rolando/arrastando no dedo
+      scene: { create() {
+        PSCENE = this;
+        PSCENE.input.topOnly = true;   // só a forma mais "de cima" no ponto tocado recebe o clique (hex embaixo da peça não dispara junto)
+        if (_pendenteDesenhoTabuleiro) { const fn = _pendenteDesenhoTabuleiro; _pendenteDesenhoTabuleiro = null; fn(); }
+      } },
+    });
+    PGAME.canvas.style.touchAction = "pan-x pan-y";
+  } else if (PGAME.scale.width !== w || PGAME.scale.height !== h) {
+    PGAME.scale.resize(w, h);
+  }
+}
+function ligaTapUnico(obj, aoTocar) {
+  if (!obj.input) obj.setInteractive();
+  let sx = 0, sy = 0, moveu = false;
+  obj.on("pointerdown", p => { sx = p.x; sy = p.y; moveu = false; });
+  obj.on("pointermove", p => { if (Math.abs(p.x - sx) > 12 || Math.abs(p.y - sy) > 12) moveu = true; });
+  obj.on("pointerup", () => { if (!moveu) aoTocar(); });
+}
+function ligaTapSegura(obj, aoSegurar, aoTocar) {
+  if (!obj.input) obj.setInteractive();
+  let sx = 0, sy = 0, disparou = false, timer = null;
+  obj.on("pointerdown", p => {
+    sx = p.x; sy = p.y; disparou = false;
+    timer = setTimeout(() => { disparou = true; if (navigator.vibrate) navigator.vibrate(10); aoSegurar(); }, 420);
+  });
+  obj.on("pointermove", p => { if (Math.abs(p.x - sx) > 12 || Math.abs(p.y - sy) > 12) clearTimeout(timer); });
+  obj.on("pointerup", () => { clearTimeout(timer); if (!disparou) aoTocar(); });
+  obj.on("pointerout", () => clearTimeout(timer));
+}
+function desenhaTabuleiroPhaser(dados) {
+  garanteTabuleiroPhaser();
+  if (!PSCENE) { _pendenteDesenhoTabuleiro = () => desenhaTabuleiroPhaser(dados); return; }
+  const { timeDeVisao, vis, alcM, alcAcao, av, ac, livresInvoc, alvosHab } = dados;
+  const S = PSCENE, C = CORES;
+  S.children.removeAll(true);   // redesenha tudo do zero a cada render(), igual o innerHTML fazia antes
+
+  for (let r = 0; r < LINS; r++) for (let c = 0; c < COLS; c++) {
+    if (!valida(c, r)) continue;
+    const { left, top } = posPx(c, r);
+    const cx = left + 26, cy = top + 30;
+    const ehBase0 = BASES[0].some(([bc, br]) => bc === c && br === r);
+    const ehBase1 = BASES[1].some(([bc, br]) => bc === c && br === r);
+    const ehObst = OBST_SET.has(kk(c, r));
+    const ehSpawn = SPAWN_SET.has(kk(c, r));
+    const ehBonus = PONTOS_MANA_SET.has(kk(c, r));
+    const fogado = !vis.has(kk(c, r));
+
+    let fill = (c + r) % 2 ? escurece(C.terra, 1.05) : escurece(C.terra, 0.95);
+    if (ehBase0) fill = misturaCor(C.terra, C.azul, 0.4);
+    if (ehBase1) fill = misturaCor(C.terra, C.carmim, 0.4);
+    if (ehObst) fill = 0xC0754A;
+    if (ehBonus) fill = misturaCor(C.terra, C.energia, 0.45);
+    if (fogado) fill = escurece(fill, 0.55);
+
+    const hex = S.add.rectangle(cx, cy, 50, 56, fill).setStrokeStyle(1, C.linha, 0.6).setDepth(0);
+    if (!ehObst) ligaTapUnico(hex, () => cliqueHex(c, r));
+
+    if (ehSpawn) S.add.text(cx, top + 6, "✦", { fontSize: "13px", color: "#D4A24C" }).setOrigin(0.5).setDepth(1);
+    if (ehObst) S.add.text(cx, cy, "🛢️", { fontSize: "20px" }).setOrigin(0.5).setDepth(1);
+    if (ehBonus) S.add.text(cx, cy, "◆", { fontSize: "16px", color: "#6BE23C" }).setOrigin(0.5).setDepth(1);
+
+    if (alcAcao.some(([cc, rr]) => cc === c && rr === r))
+      S.add.rectangle(cx, cy, 50, 56).setStrokeStyle(2, 0xD65A30, 0.65).setDepth(1);
+    if (!ehObst && alcM.some(([cc, rr]) => cc === c && rr === r))
+      S.add.rectangle(cx, cy, 50, 56, 0x3A9656, 0.35).setDepth(1);
+    if (av.herois.some(o => o.pos[0] === c && o.pos[1] === r) ||
+        (av.base !== null && BASES[av.base].some(([bc, br]) => bc === c && br === r)))
+      S.add.rectangle(cx, cy, 50, 56, 0xD64630, 0.35).setDepth(1);
+    if (ac.aliados.some(o => o.pos[0] === c && o.pos[1] === r))
+      S.add.rectangle(cx, cy, 50, 56, 0x3A9656, 0.35).setDepth(1);
+    if (livresInvoc.some(([cc, rr]) => cc === c && rr === r))
+      S.add.rectangle(cx, cy, 50, 56, 0x3A9656, 0.35).setDepth(1);
+    if (alvosHab.some(([cc, rr]) => cc === c && rr === r))
+      S.add.rectangle(cx, cy, 50, 56, 0x5FBF8A, 0.4).setStrokeStyle(2, 0x5FBF8A, 0.8).setDepth(1);
+  }
+
+  [0, 1].forEach(tt => T.times[tt].campo.forEach(h => {
+    if (tt !== timeDeVisao && !vis.has(kk(...h.pos))) return;
+    const { left, top } = posPx(...h.pos);
+    const cx = left + 26, cy = top + 30;
+    const corTime = h.t === 0 ? C.azul : C.carmim;
+    const agiu = (h.moveu && h.atacou) || h.atordoado;
+    const cont = S.add.container(cx, cy).setDepth(3);
+    const corpo = S.add.circle(0, 0, 21, misturaCor(corTime, 0x000000, 0.15));
+    corpo.setStrokeStyle(h === selecionado ? 4 : (T.times[h.t].mana >= GATILHO_HAB ? 3 : 2),
+      h === selecionado ? C.brass : (T.times[h.t].mana >= GATILHO_HAB ? 0x5FBF8A : corTime));
+    cont.add(corpo);
+    cont.add(S.add.text(0, -1, HEROIS[h.id].n[0], { fontSize: "16px", fontStyle: "bold", color: "#E8F0EA" }).setOrigin(0.5));
+    let statusTxt = "";
+    if (h.intocavel) statusTxt += "👻"; if (h.exausto) statusTxt += "💤"; if (h.atordoado) statusTxt += "😵";
+    if (statusTxt) cont.add(S.add.text(-14, -26, statusTxt, { fontSize: "10px" }).setOrigin(0.5));
+    cont.add(S.add.rectangle(0, 27, 40, 5, 0x000000, 0.7));
+    const pct = Math.max(0, h.vida / h.vidaMax);
+    if (pct > 0) cont.add(S.add.rectangle(-20, 27, 40 * pct, 5, C.vivo).setOrigin(0, 0.5));
+    cont.add(S.add.text(0, 36, `${Math.max(0, h.vida)}/${h.vidaMax}`, { fontSize: "10px", color: "#fff" }).setOrigin(0.5));
+    if (agiu) cont.setAlpha(0.4);
+    const c0 = h.pos[0], r0 = h.pos[1], hid = h.id, inst = h;
+    cont.setInteractive(new Phaser.Geom.Rectangle(-22, -22, 44, 44), Phaser.Geom.Rectangle.Contains);
+    ligaTapSegura(cont, () => mostraCarta(hid, inst), () => cliqueHex(c0, r0));
+  }));
+
+  [0, 1].forEach(tt => {
+    const pts = BASES[tt].map(([bc, br]) => posPx(bc, br));
+    const cx = pts.reduce((s, p) => s + p.left, 0) / pts.length + 26;
+    const cy = pts.reduce((s, p) => s + p.top, 0) / pts.length + 22;
+    S.add.text(cx, cy, "♻", { fontSize: "40px", color: tt === 0 ? "#4C9BD6" : "#D45B4E" }).setOrigin(0.5).setAlpha(0.9).setDepth(2);
+    const externo = posPx(...BASES[tt][0]);
+    const hpY = externo.top + 22;
+    const minLeft = Math.min(...pts.map(p => p.left)), maxLeft = Math.max(...pts.map(p => p.left));
+    const hpX = tt === 0 ? minLeft - 30 : maxLeft + 52 + 30;
+    S.add.rectangle(hpX, hpY, 40, 26, 0x000000, 0.4).setStrokeStyle(2, tt === 0 ? C.azul : C.carmim).setDepth(2);
+    S.add.text(hpX, hpY, String(T.times[tt].base), { fontSize: "18px", fontStyle: "900", color: tt === 0 ? "#8CCBF2" : "#F58F82" }).setOrigin(0.5).setDepth(3);
+  });
+
+  if (confirmacaoPendente) {
+    const { left, top } = posPx(...confirmacaoPendente.pos);
+    const cura = confirmacaoPendente.tipo === "cura";
+    const bx = left + 42, by = top + 18;
+    const bt = S.add.circle(bx, by, 16, cura ? 0x7BE0A8 : 0xD4A24C).setStrokeStyle(2, 0x1B140A).setDepth(10);
+    S.add.text(bx, by, cura ? "✚" : "⚔", { fontSize: "15px", color: "#1B140A" }).setOrigin(0.5).setDepth(11);
+    ligaTapUnico(bt, () => confirmarAcao());
+  }
+}
+
 function render() {
   if (simulando) return;
   if (!T || T.fase !== "jogando") return;
@@ -1547,90 +1704,7 @@ function render() {
   const livresInvoc = bancoSel ? casasDeInvocacao(t) : [];
   const alvosHab = modoHabilidade && selecionado ? alvosHabilidade(selecionado) : [];
 
-  let html = "";
-  for (let r = 0; r < LINS; r++) for (let c = 0; c < COLS; c++) {
-    if (!valida(c, r)) continue;
-    const { left, top } = posPx(c, r);
-    let cls = "hex" + ((c + r) % 2 ? " par" : " impar");
-    const ehBase0 = BASES[0].some(([bc, br]) => bc === c && br === r);
-    const ehBase1 = BASES[1].some(([bc, br]) => bc === c && br === r);
-    if (ehBase0) cls += " base0"; if (ehBase1) cls += " base1";
-    const ehObst = OBST_SET.has(kk(c, r));
-    if (ehObst) cls += " obstaculo";
-    const ehSpawn = SPAWN_SET.has(kk(c, r));
-    if (ehSpawn) cls += " spawn";
-    if (PONTOS_MANA_SET.has(kk(c, r))) cls += " bonus";
-    if (!vis.has(kk(c, r))) cls += " fogado";
-    const emRaioAcao = alcAcao.some(([cc, rr]) => cc === c && rr === r);
-    if (emRaioAcao) cls += " raioAcao";
-    if (!ehObst && alcM.some(([cc, rr]) => cc === c && rr === r)) cls += " alcance-mov selecionavel";
-    if (av.herois.some(o => o.pos[0] === c && o.pos[1] === r)) cls += " alcance-atk selecionavel";
-    if (av.base !== null && BASES[av.base].some(([bc, br]) => bc === c && br === r)) cls += " alcance-atk selecionavel";
-    if (ac.aliados.some(o => o.pos[0] === c && o.pos[1] === r)) cls += " alcance-mov selecionavel";
-    if (livresInvoc.some(([cc, rr]) => cc === c && rr === r)) cls += " alcance-mov selecionavel";
-    if (alvosHab.some(([cc, rr]) => cc === c && rr === r)) cls += " alcance-hab selecionavel";
-    let ico = "";
-    if (ehObst) ico += '<span class="obstIco">🛢️</span>';
-    if (PONTOS_MANA_SET.has(kk(c, r))) ico += '<span class="bonusIco">◆</span>';
-    if (ehSpawn) ico += '<span class="spawnIco">✦</span>';
-    html += `<div class="${cls}" style="left:${left}px;top:${top}px" data-c="${c}" data-r="${r}">${ico}</div>`;
-  }
-  [0, 1].forEach(tt => T.times[tt].campo.forEach(h => {
-    if (tt !== timeDeVisao && !vis.has(kk(...h.pos))) return;   // névoa: inimigo fora de vista não é desenhado
-    const { left, top } = posPx(...h.pos);
-    const art = RETRATO(h.id);
-    let cls = "peca t" + h.t;
-    if (h === selecionado) cls += " selecionada";
-    if ((h.moveu && h.atacou) || h.atordoado) cls += " agiu";
-    if (T.times[h.t].mana >= GATILHO_HAB) cls += " habilitavel";
-    html += `<div class="${cls}" style="left:${left + 4}px;top:${top + 8}px;${art ? `background-image:url('${art}')` : ""}"
-      data-c="${h.pos[0]}" data-r="${h.pos[1]}" data-hid="${h.id}" data-piece="1" title="${HEROIS[h.id].n}">
-      ${art ? "" : HEROIS[h.id].n[0]}
-      <div class="status">
-        ${h.intocavel ? '<span title="Inalvejável">👻</span>' : ""}
-        ${h.exausto ? '<span title="Exausto">💤</span>' : ""}
-        ${h.atordoado ? '<span title="Atordoado">😵</span>' : ""}
-      </div>
-      <div class="vidabar"><i style="width:${Math.max(0, 100 * h.vida / h.vidaMax)}%"></i></div>
-      <div class="vidaNum">${Math.max(0, h.vida)}/${h.vidaMax}</div>
-    </div>`;
-  }));
-  // símbolo de sucata no centroide de cada Base, e a vida da Base do
-  // lado de fora do aglomerado (time 0 sempre nasce à esquerda do
-  // CENTRO, time 1 à direita — ver rotacionar180 em construirMapa)
-  [0, 1].forEach(tt => {
-    const pts = BASES[tt].map(([bc, br]) => posPx(bc, br));
-    const cx = pts.reduce((s, p) => s + p.left, 0) / pts.length + 26;
-    const cy = pts.reduce((s, p) => s + p.top, 0) / pts.length + 22;
-    html += `<div class="baseSimbolo t${tt}" style="left:${cx}px;top:${cy}px">♻</div>`;
-    // HP alinhado com o hexágono mais EXTERNO do cluster — BASES[tt][0] é a
-    // âncora mais distante do CENTRO (ver clusterBase), não a média dos 3
-    const externo = posPx(...BASES[tt][0]);
-    const hpY = externo.top + 22;
-    const minLeft = Math.min(...pts.map(p => p.left)), maxLeft = Math.max(...pts.map(p => p.left));
-    const hpX = tt === 0 ? minLeft - 30 : maxLeft + 52 + 30;
-    html += `<div class="baseHp t${tt}" style="left:${hpX}px;top:${hpY}px">${T.times[tt].base}</div>`;
-  });
-  // botão de confirmar ataque/cura — some com qualquer outro clique no tabuleiro
-  if (confirmacaoPendente) {
-    const { left, top } = posPx(...confirmacaoPendente.pos);
-    const cura = confirmacaoPendente.tipo === "cura";
-    html += `<button class="confirmAcao${cura ? " cura" : ""}" id="btConfirmAcao" style="left:${left + 26}px;top:${top + 2}px"
-      title="${cura ? "Confirmar cura" : "Confirmar ataque"}">${cura ? "✚" : "⚔"}</button>`;
-  }
-  G("board").innerHTML = html;
-  G("board").style.width = (COLS * 52 + 26) + "px";
-  G("board").style.height = (LINS * 45 + 20) + "px";
-  [...G("board").querySelectorAll(".hex")].forEach(el => {
-    el.onclick = () => cliqueHex(+el.dataset.c, +el.dataset.r);
-  });
-  [...G("board").querySelectorAll(".peca")].forEach(el => {
-    const c = +el.dataset.c, r = +el.dataset.r, hid = el.dataset.hid;
-    const inst = ocupante(c, r);
-    seguraEClica(el, () => mostraCarta(hid, inst), () => cliqueHex(c, r));
-  });
-  const btConfirmAcao = G("btConfirmAcao");
-  if (btConfirmAcao) btConfirmAcao.onclick = e => { e.stopPropagation(); confirmarAcao(); };
+  desenhaTabuleiroPhaser({ timeDeVisao, vis, alcM, alcAcao, av, ac, livresInvoc, alvosHab });
 
   // banco
   let bhtml = "";
