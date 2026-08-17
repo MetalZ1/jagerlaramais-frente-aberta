@@ -25,6 +25,11 @@
   --terra:#CBB78C; --terra-dark:#8F7A54;
   --ferrugem-dark:#6E3B1F;
   --energia:#6BE23C; --energia-2:#2E8B1E; --energia-glow:rgba(107,226,60,.4);
+  /* anéis de terreno por distância do centro — bem perto do --terra de
+     propósito: é só textura/cenário, não pode competir visualmente com as
+     cores que sinalizam função (base azul/carmim, obstáculo, ponto de mana) */
+  --grama:#BFB87E; --grama-dark:#867E52;
+  --wasteland:#B8A98E; --wasteland-dark:#7D7260;
 }
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 html,body{height:100%;overscroll-behavior:none}
@@ -80,12 +85,17 @@ button{font-family:var(--ui);cursor:pointer;border:none;background:none;color:in
 .hex{
   position:absolute;width:52px;height:60px;
   clip-path:polygon(50% 0%,100% 25%,100% 75%,50% 100%,0% 75%,0% 25%);
-  background:var(--terra);border:1px solid var(--terra-dark);
+  background:linear-gradient(155deg,var(--terra),var(--terra-dark));border:1px solid var(--terra-dark);
   display:flex;align-items:center;justify-content:center;
   transition:background .15s,filter .15s;
 }
 .hex.par{filter:brightness(1.05)}
 .hex.impar{filter:brightness(0.95)}
+/* anéis de terreno comum, por distância do centro do mapa (ver anelTerreno) —
+   wasteland no meio, grama na faixa intermediária, o resto fica no degradê
+   padrão de "chapa batida" acima */
+.hex.anel-grama{background:linear-gradient(155deg,var(--grama),var(--grama-dark))}
+.hex.anel-wasteland{background:linear-gradient(155deg,var(--wasteland),var(--wasteland-dark))}
 .hex.zona0{background:linear-gradient(180deg,rgba(76,155,214,.16),var(--terra))}
 .hex.zona1{background:linear-gradient(180deg,rgba(212,91,78,.16),var(--terra))}
 .hex.base0{background:linear-gradient(180deg,rgba(76,155,214,.42),var(--terra));animation:pulso0 2.6s ease-in-out infinite}
@@ -109,8 +119,8 @@ button{font-family:var(--ui);cursor:pointer;border:none;background:none;color:in
 .baseSimbolo.t0{color:var(--azul)}
 .baseSimbolo.t1{color:var(--carmim)}
 .hex.spawn{outline:2px dashed rgba(138,106,47,.7);outline-offset:-2px}
-.hex .spawnIco{font-size:15px;color:var(--brass-dim);opacity:.9}
-.hex .bonusIco{font-size:15px;color:var(--energia-2);opacity:.9;text-shadow:0 0 5px var(--energia)}
+.hex .spawnIco{display:flex;opacity:.95;filter:drop-shadow(0 0 3px rgba(212,162,76,.6))}
+.hex .bonusIco{display:flex;opacity:.95;filter:drop-shadow(0 0 4px var(--energia))}
 .hex.obstaculo{background:linear-gradient(160deg,#C0754A,#8A4C2A);border-color:var(--ferrugem-dark);cursor:default}
 .hex.obstaculo .obstIco{font-size:20px;filter:drop-shadow(0 2px 3px rgba(0,0,0,.6));opacity:.9}
 .hex.obstaculo.fogado .obstIco{opacity:.3}
@@ -1516,27 +1526,19 @@ function casasVisiveis(t) {
 }
 
 /* ───────────────────────── Render ───────────────────────── */
-/* Tiles de terreno gerados (ver arte/tiles-hex/README.md) — aplicados como
-   background-image nas próprias divs .hex (o clip-path já recorta no formato
-   do hexágono, igual já fazíamos com os retratos dos heróis). "Anel habitado"
-   ainda não tem arte: cai no preenchimento de cor chapada de sempre. */
-const TILES_TERRENO = {
-  base: "arte/tiles-hex/_otimizado/hex-base.jpg",
-  obstaculo: "arte/tiles-hex/_otimizado/hex-obstaculo.jpg",
-  invocacao: "arte/tiles-hex/_otimizado/hex-invocacao.jpg",
-  mana: "arte/tiles-hex/_otimizado/hex-mana.jpg",
-  grama: "arte/tiles-hex/_otimizado/hex-grama.jpg",
-  wasteland: "arte/tiles-hex/_otimizado/hex-wasteland.jpg",
-};
+/* Ícones das casas especiais — SVG próprio, não emoji: dá pra desenhar algo
+   que realmente representa a função da casa e ainda segue a paleta do jogo. */
+const ICO_MANA = `<svg viewBox="0 0 24 24" width="17" height="17"><path d="M13 2 3 14h6l-1 8 11-13h-6z" fill="#6BE23C"/></svg>`;
+const ICO_INVOCACAO = `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="#D4A24C" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="18" r="3.4"/><path d="M12 14V3M7.5 7.5 12 3l4.5 4.5"/></svg>`;
 /* Anel de terreno por distância do CENTRO (ver direção de arte: base →
    arredores habitados → ferragem/obstáculo → grama alta → wasteland no meio
    do mapa). Ferragem já é tratada à parte (é o próprio OBST_SET); aqui só
-   decide entre os anéis "de piso comum". */
+   decide o degradê do piso comum — ver .hex.anel-grama/.anel-wasteland no CSS. */
 function anelTerreno(c, r) {
   const d = dist(CENTRO, [c, r]) / RAIO;
-  if (d < 0.4) return TILES_TERRENO.wasteland;
-  if (d < 0.7) return TILES_TERRENO.grama;
-  return null;   // "anel habitado" — sem arte ainda
+  if (d < 0.4) return "anel-wasteland";
+  if (d < 0.7) return "anel-grama";
+  return null;   // "anel habitado" — fica no degradê padrão do .hex
 }
 
 function render() {
@@ -1593,22 +1595,17 @@ function render() {
     if (livresInvoc.some(([cc, rr]) => cc === c && rr === r)) cls += " alcance-mov selecionavel";
     if (alvosHab.some(([cc, rr]) => cc === c && rr === r)) cls += " alcance-hab selecionavel";
 
-    let textura = null;
-    if (ehBase0 || ehBase1) textura = TILES_TERRENO.base;
-    else if (ehObst) textura = TILES_TERRENO.obstaculo;
-    else if (ehSpawn) textura = TILES_TERRENO.invocacao;
-    else if (PONTOS_MANA_SET.has(kk(c, r))) textura = TILES_TERRENO.mana;
-    else textura = anelTerreno(c, r);
-    // ícones de placeholder (🛢️◆✦) somem quando já existe tile de verdade — a
-    // arte já mostra o pneu/rachadura/roda, o glifo por cima só ia poluir.
-    let ico = "";
-    if (!textura) {
-      if (ehObst) ico += '<span class="obstIco">🛢️</span>';
-      if (PONTOS_MANA_SET.has(kk(c, r))) ico += '<span class="bonusIco">◆</span>';
-      if (ehSpawn) ico += '<span class="spawnIco">✦</span>';
+    // Base/obstáculo/spawn/bonus já têm degradê próprio no CSS (.base0/.base1/
+    // .obstaculo/.bonus) — o anel só entra pro piso comum, sem sobrepor essas classes.
+    if (!ehBase0 && !ehBase1 && !ehObst && !ehSpawn && !PONTOS_MANA_SET.has(kk(c, r))) {
+      const anel = anelTerreno(c, r);
+      if (anel) cls += " " + anel;
     }
-    const estiloTextura = textura ? `;background-image:url('${textura}');background-size:cover;background-position:center` : "";
-    html += `<div class="${cls}" style="left:${left}px;top:${top}px${estiloTextura}" data-c="${c}" data-r="${r}">${ico}</div>`;
+    let ico = "";
+    if (ehObst) ico += '<span class="obstIco">🛢️</span>';
+    if (PONTOS_MANA_SET.has(kk(c, r))) ico += `<span class="bonusIco">${ICO_MANA}</span>`;
+    if (ehSpawn) ico += `<span class="spawnIco">${ICO_INVOCACAO}</span>`;
+    html += `<div class="${cls}" style="left:${left}px;top:${top}px" data-c="${c}" data-r="${r}">${ico}</div>`;
   }
   [0, 1].forEach(tt => T.times[tt].campo.forEach(h => {
     if (tt !== timeDeVisao && !vis.has(kk(...h.pos))) return;   // névoa: inimigo fora de vista não é desenhado
