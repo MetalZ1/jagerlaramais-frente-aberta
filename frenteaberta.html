@@ -148,6 +148,42 @@ button{font-family:var(--ui);cursor:pointer;border:none;background:none;color:in
 .peca .esc{position:absolute;top:-6px;right:-4px;font-size:11px;color:#8CE0F2}
 .peca .status{position:absolute;top:-6px;left:-4px;display:flex;gap:2px;font-size:11px}
 
+/* ───── Vida no personagem sem arte nova — só CSS em cima do retrato que já
+   existe. Cada .efeito-X é de disparo único: a peça inteira é recriada a
+   cada render() (innerHTML), então a keyframe sempre toca do zero sozinha,
+   sem precisar de classe temporária removida via JS. ───── */
+@keyframes respirar{0%,100%{transform:scale(1)}50%{transform:scale(1.035)}}
+.peca:not(.agiu){animation:respirar 2.6s ease-in-out infinite}
+
+@keyframes lunge{0%,100%{transform:translateY(0) scale(1)}40%{transform:translateY(-3px) scale(1.12)}}
+.peca.efeito-ataque{animation:lunge .38s ease-out}
+
+@keyframes hitShake{0%,100%{transform:translateX(0)}20%{transform:translateX(-5px)}40%{transform:translateX(4px)}60%{transform:translateX(-3px)}80%{transform:translateX(2px)}}
+.peca.efeito-dano{animation:hitShake .4s ease-in-out}
+.peca.efeito-dano::after{content:"";position:absolute;inset:0;border-radius:50%;
+  background:rgba(255,106,90,.55);animation:flashFade .4s ease-out;pointer-events:none}
+@keyframes flashFade{0%{opacity:1}100%{opacity:0}}
+
+@keyframes healPulse{0%{box-shadow:0 0 0 0 rgba(123,224,168,.7)}100%{box-shadow:0 0 0 16px rgba(123,224,168,0)}}
+.peca.efeito-cura{animation:healPulse .6s ease-out}
+@keyframes castPulse{0%{box-shadow:0 0 0 0 rgba(123,224,168,.5)}100%{box-shadow:0 0 0 8px rgba(123,224,168,0)}}
+.peca.efeito-curando{animation:castPulse .5s ease-out}
+
+@keyframes popIn{0%{transform:scale(0)}60%{transform:scale(1.15)}100%{transform:scale(1)}}
+.peca.efeito-invocar{animation:popIn .35s cubic-bezier(.34,1.56,.64,1)}
+
+@keyframes pousar{0%{transform:scale(.85)}60%{transform:scale(1.08)}100%{transform:scale(1)}}
+.peca.efeito-mover{animation:pousar .25s ease-out}
+
+.baseHp.efeito-dano{animation:hitShake .4s ease-in-out}
+
+@keyframes explode{0%{transform:translate(-50%,-50%) scale(.4);opacity:1}100%{transform:translate(-50%,-50%) scale(2);opacity:0}}
+.efeitoMorte{position:absolute;width:44px;height:44px;border-radius:50%;pointer-events:none;
+  display:flex;align-items:center;justify-content:center;font-size:22px;z-index:6;
+  transform:translate(-50%,-50%);animation:explode .5s ease-out forwards}
+.efeitoMorte.t0{background:radial-gradient(circle,rgba(76,155,214,.55),transparent 70%)}
+.efeitoMorte.t1{background:radial-gradient(circle,rgba(212,91,78,.55),transparent 70%)}
+
 /* ───── PAINEL ───── */
 #painel{flex:none;border-top:1px solid var(--line);padding:8px 10px calc(8px + var(--safe))}
 #banco{display:flex;gap:6px;overflow-x:auto;padding-bottom:6px;margin-bottom:6px}
@@ -638,6 +674,13 @@ let bancoSel = null;      // id do herói do banco selecionado pra invocar
 let modoHabilidade = false;   // true = próximo clique no tabuleiro tenta usar a habilidade do selecionado
 let confirmacaoPendente = null;   // { tipo:"ataque"|"cura"|"base", heroi, alvo, timeAlvo, pos } — aguardando confirmação (espada/cruz)
 let simulando = false;   // true = a IA Jager Laramais está testando uma jogada hipotética; suprime tela/toast/pausas
+/* Fila de "coisa que acabou de acontecer" — cada função de jogo registra um
+   efeito antes do próximo render(); o render() consome (decide que animação
+   aplicar em cada peça) e limpa em seguida, senão o efeito ia tocar de novo
+   em qualquer re-render futuro sem relação nenhuma com a ação original. */
+let EFEITOS = [];
+function marcaEfeito(alvo, tipo) { if (!simulando && alvo) EFEITOS.push({ uid: alvo._uid, tipo }); }
+function marcaEfeitoMorte(pos, t) { if (!simulando) EFEITOS.push({ tipo: "morte", pos: [...pos], t }); }
 let peer = null, conexao = null;   // PeerJS — só usados no modo "Jogar online"
 let aplicandoRemoto = false;   // true enquanto adota um T recebido pela rede; evita reenviar o que acabou de chegar
 let salaMapaEsc = null, salaRosterHost = null;   // mapa/elenco que o host escolheu, aguardando o elenco do guest chegar
@@ -1182,8 +1225,10 @@ function invoca(id, c, r) {
   if (tm.invocouEm.has(chave)) { toast("Esse ponto de invocação já foi usado neste turno"); return; }
   if (ocupante(c, r)) { toast("Ponto de invocação ocupado — mova esse herói primeiro"); return; }
   tm.mana -= arq.custo;
-  tm.campo.push(criarHeroi(id, t, [c, r]));
+  const novo = criarHeroi(id, t, [c, r]);
+  tm.campo.push(novo);
   tm.invocouEm.add(chave);
+  marcaEfeito(novo, "invocar");
   bancoSel = null; render();
 }
 
@@ -1231,21 +1276,25 @@ function move(h, c, r) {
   const tm = T.times[h.t];
   tm.mana -= 1;
   h.pos = [c, r]; h.moveu = true;
+  marcaEfeito(h, "mover");
   render();
 }
 
 function dano(h, alvo, bruto) {
   if (alvo.intocavel) return;   // Runner em Avanço Fantasma: inalvejável no turno do adversário
   alvo.vida -= bruto;
+  marcaEfeito(h, "ataque"); marcaEfeito(alvo, "dano");
   if (alvo.vida <= 0) morre(alvo, h.t);
 }
 function danoBase(t, bruto) {
   T.times[t].base = Math.max(0, T.times[t].base - bruto);
+  if (!simulando) EFEITOS.push({ tipo: "baseHit", t });
 }
 function morre(alvo, matadorTime) {
   const tm = T.times[alvo.t];
   tm.campo = tm.campo.filter(h => h !== alvo);
   if (selecionado === alvo) selecionado = null;
+  marcaEfeitoMorte(alvo.pos, alvo.t);
   if (matadorTime != null && matadorTime !== alvo.t) {
     T.times[matadorTime].mana += 1;
     toast(NOMES[matadorTime] + " ganhou 1 de Mana pelo abate");
@@ -1263,6 +1312,7 @@ function atacaBase(h, tInimigo) {
   tm.mana -= 1;
   danoBase(tInimigo, h.dano);   // dano cheio do ataque do herói, sem teto de 1
   h.atacou = true;
+  marcaEfeito(h, "ataque");
   checaFim(); render();
 }
 function curar(h, alvo) {
@@ -1270,6 +1320,7 @@ function curar(h, alvo) {
   tm.mana -= 1;
   alvo.vida = alvo.vidaMax + 1;   // cura total + 1 de bônus
   h.atacou = true;
+  marcaEfeito(h, "curando"); marcaEfeito(alvo, "cura");
   render();
 }
 
@@ -1615,6 +1666,8 @@ function render() {
     if (h === selecionado) cls += " selecionada";
     if ((h.moveu && h.atacou) || h.atordoado) cls += " agiu";
     if (T.times[h.t].mana >= GATILHO_HAB) cls += " habilitavel";
+    const efeito = EFEITOS.find(e => e.uid === h._uid);
+    if (efeito) cls += " efeito-" + efeito.tipo;
     html += `<div class="${cls}" style="left:${left + 4}px;top:${top + 8}px;${art ? `background-image:url('${art}')` : ""}"
       data-c="${h.pos[0]}" data-r="${h.pos[1]}" data-hid="${h.id}" data-piece="1" title="${HEROIS[h.id].n}">
       ${art ? "" : HEROIS[h.id].n[0]}
@@ -1641,7 +1694,14 @@ function render() {
     const hpY = externo.top + 22;
     const minLeft = Math.min(...pts.map(p => p.left)), maxLeft = Math.max(...pts.map(p => p.left));
     const hpX = tt === 0 ? minLeft - 30 : maxLeft + 52 + 30;
-    html += `<div class="baseHp t${tt}" style="left:${hpX}px;top:${hpY}px">${T.times[tt].base}</div>`;
+    const baseAtingida = EFEITOS.some(e => e.tipo === "baseHit" && e.t === tt) ? " efeito-dano" : "";
+    html += `<div class="baseHp t${tt}${baseAtingida}" style="left:${hpX}px;top:${hpY}px">${T.times[tt].base}</div>`;
+  });
+  // "explosão" de sucata onde um herói caiu — não é peça (já saiu de T.times[].campo),
+  // por isso desenhada à parte, na posição registrada em marcaEfeitoMorte
+  EFEITOS.filter(e => e.tipo === "morte").forEach(e => {
+    const { left, top } = posPx(...e.pos);
+    html += `<div class="efeitoMorte t${e.t}" style="left:${left + 26}px;top:${top + 30}px">💥</div>`;
   });
   // botão de confirmar ataque/cura — some com qualquer outro clique no tabuleiro
   if (confirmacaoPendente) {
@@ -1653,6 +1713,13 @@ function render() {
   G("board").innerHTML = html;
   G("board").style.width = (COLS * 52 + 26) + "px";
   G("board").style.height = (LINS * 45 + 20) + "px";
+  // Limpa com um delay pequeno (não na hora) porque algumas ações chamam
+  // render() duas vezes em sequência pro mesmo evento (ex.: confirmarAcao) —
+  // limpando na hora, a segunda chamada acharia a fila vazia e apagaria a
+  // animação da primeira. 50ms sobrevive a esse "eco" mas não vaza pra a
+  // próxima ação de verdade (essas são espaçadas por centenas de ms).
+  const efeitosDesteQuadro = EFEITOS;
+  setTimeout(() => { if (EFEITOS === efeitosDesteQuadro) EFEITOS = []; }, 50);
   [...G("board").querySelectorAll(".hex")].forEach(el => {
     el.onclick = () => cliqueHex(+el.dataset.c, +el.dataset.r);
   });
