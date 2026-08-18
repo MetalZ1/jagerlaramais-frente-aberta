@@ -826,7 +826,7 @@ function telaComoJogar() {
     { t: "⚡ Pontos de Mana", d: "Ter um herói em cima de um ponto de Mana no início do turno rende +1 de Mana naquele turno — dominar os 2 pontos financia o ataque à Base." },
     { t: "✨ Habilidades especiais", d: `Ao estocar ${GATILHO_HAB} de Mana, cada herói libera a própria habilidade especial — teste cada uma no Tutorial de habilidades.` },
     { t: "👥 Elenco espelhado", d: "Os dois times usam o mesmo elenco de 5 arquétipos, em cópias ilimitadas — a diferença está na tática, não no material." },
-    { t: "🗺 Turnos", d: "Em cada turno, mova, invoque e ataque (ou cure) heróis à vontade enquanto tiver Mana, e encerre o turno quando terminar." },
+    { t: "🗺 Turnos", d: "Em cada turno, invoque, mova e ataque (ou cure) quantos heróis diferentes quiser, contanto que tenha Mana — mas cada herói só move e só ataca (ou cura) uma vez por turno. Encerre o turno quando terminar." },
   ];
   G("telacx").innerHTML = `<span class="et">Como jogar</span><h2>Regras<br>do jogo</h2>
     ${TOPICOS.map(o => `<div class="habCx"><b>${o.t}</b><p>${o.d}</p></div>`).join("")}
