@@ -803,21 +803,36 @@ function mostraCarta(id, inst) {
 function telaAbertura() {
   const lista = ROSTER.map(id => `${HEROIS[id].n} (${ARQUETIPOS[HERO_ARQ[id]].nome})`).join(", ");
   G("telacx").innerHTML = `<span class="et">Modo à parte — sem dado, sem lane</span><h2>FRENTE<br>ABERTA</h2>
-    <p>Times espelhados: os dois usam o mesmo elenco de 5 arquétipos, em cópias
-    ilimitadas. Invocar, mover e atacar (ou curar) gastam Mana — abater um herói
-    inimigo devolve 1 de Mana pro seu time. Dominem os 2 pontos de Mana e derrubem
-    a Base inimiga (cluster de hexágonos com o símbolo de sucata no meio). Ao
-    estocar ${GATILHO_HAB} de Mana, cada herói ganha acesso à sua habilidade especial.</p>
     <p style="margin-top:10px">${lista}</p>
     <button class="grande" id="okPvp">Dois jogadores (mesmo aparelho)</button>
     <button class="grande" id="okCpu">Jogar contra a CPU</button>
     <button class="grande" id="okOnline" style="background:var(--azul);color:#0B120F">🌐 Jogar online</button>
-    <button class="grande" id="okTutorial" style="background:var(--ground-3);color:var(--ink);border:1px solid var(--line-soft)">Tutorial de habilidades</button>`;
+    <button class="grande" id="okTutorial" style="background:var(--ground-3);color:var(--ink);border:1px solid var(--line-soft)">Tutorial de habilidades</button>
+    <button class="grande" id="okComoJogar" style="background:transparent;color:var(--ink-2);border:1px solid var(--line-soft)">📖 Como jogar</button>`;
   G("tela").classList.add("aberta");
   G("okPvp").onclick = () => telaEscolhaRosterPvp(1, null);
   G("okCpu").onclick = () => telaConfigCpu();
   G("okOnline").onclick = () => telaOnline();
   G("okTutorial").onclick = () => telaTutorial();
+  G("okComoJogar").onclick = () => telaComoJogar();
+}
+/* Tutorial de regras em texto — tirado da tela de abertura pra não
+   sobrecarregar o primeiro contato; agora vive na própria tela, em
+   tópicos curtos (reaproveita o visual de .habCx dos cards de herói). */
+function telaComoJogar() {
+  const TOPICOS = [
+    { t: "🎯 Objetivo", d: "Derrube a Base inimiga — o cluster de hexágonos com o símbolo ♻ no fundo do território dele — antes que derrubem a sua." },
+    { t: "♦ Mana", d: "Invocar, mover e atacar (ou curar) gastam Mana. Abater um herói inimigo devolve 1 de Mana pro seu time." },
+    { t: "⚡ Pontos de Mana", d: "Ter um herói em cima de um ponto de Mana no início do turno rende +1 de Mana naquele turno — dominar os 2 pontos financia o ataque à Base." },
+    { t: "✨ Habilidades especiais", d: `Ao estocar ${GATILHO_HAB} de Mana, cada herói libera a própria habilidade especial — teste cada uma no Tutorial de habilidades.` },
+    { t: "👥 Elenco espelhado", d: "Os dois times usam o mesmo elenco de 5 arquétipos, em cópias ilimitadas — a diferença está na tática, não no material." },
+    { t: "🗺 Turnos", d: "Em cada turno, mova, invoque e ataque (ou cure) heróis à vontade enquanto tiver Mana, e encerre o turno quando terminar." },
+  ];
+  G("telacx").innerHTML = `<span class="et">Como jogar</span><h2>Regras<br>do jogo</h2>
+    ${TOPICOS.map(o => `<div class="habCx"><b>${o.t}</b><p>${o.d}</p></div>`).join("")}
+    <button class="grande" id="okVoltarComoJogar" style="background:var(--ground-3);color:var(--ink);border:1px solid var(--line-soft);margin-top:10px">◀ Voltar</button>`;
+  G("tela").classList.add("aberta");
+  G("okVoltarComoJogar").onclick = () => telaAbertura();
 }
 /* Dois jogadores no mesmo aparelho: o time AZUL escolhe o elenco primeiro,
    depois o CARMIM — os dois podem escolher o mesmo elenco sem problema. */
@@ -862,8 +877,13 @@ function heroiTutorial(arqKey, t, pos) { return criarHeroi(idPorArquetipo(arqKey
 // (1 de vida) serve de alvo padrão; o cenário do Soldier pede um Soldier
 // (3 de vida) porque, com só 1 de vida, o dano inicial já mataria o alvo
 // antes do empurrão acontecer, e o efeito ficaria invisível.
-function dummyTutorial(t, pos, arqKey) {
-  return criarHeroi(idPorArquetipo(arqKey || "runner"), t, pos);
+// hp opcional: sobrescreve a vida normal do arquétipo (usado quando a
+// vida padrão morreria antes do efeito terminar de aparecer — ver cena
+// do Soldier abaixo).
+function dummyTutorial(t, pos, arqKey, hp) {
+  const h = criarHeroi(idPorArquetipo(arqKey || "runner"), t, pos);
+  if (hp) { h.vida = hp; h.vidaMax = hp; }
+  return h;
 }
 const CENAS_TUTORIAL = {
   runner(a) {
@@ -886,10 +906,11 @@ const CENAS_TUTORIAL = {
     const pos = [a[0] + 2, a[1]];
     return {
       campo0: [heroiTutorial("soldier", 0, pos)],
-      // dummy Dona Chinela (4 de vida): sobrevive ao 1º golpe (2 de dano),
-      // é empurrada 1 casa e aí bate na estrutura (+2) — dá pra ver o
-      // dano em duas etapas antes de cair
-      campo1: [dummyTutorial(1, [pos[0] + 1, pos[1]], "heavy")],
+      // dummy Dona Chinela com 5 de vida (1 a mais que o normal, senão
+      // morreria exatamente nesse combo): sobrevive ao 1º golpe (2 de
+      // dano), é empurrada 1 casa e aí bate na estrutura (+2) — sobra 1
+      // de vida, então dá pra ver o dano em duas etapas antes de cair
+      campo1: [dummyTutorial(1, [pos[0] + 1, pos[1]], "heavy", 5)],
     };
   },
   heavy(a) {
@@ -912,6 +933,21 @@ const CENAS_TUTORIAL = {
     };
   },
 };
+// Centraliza o scroll do palco em cima da cena de tutorial (herói + bonecos,
+// com uma folga extra) — sem isso, num mapa de 13x13 casas o time some fora
+// da tela em telas pequenas e o jogador não vê onde o golpe está batendo.
+function centralizaPalcoTutorial() {
+  const p = G("palco"), b = G("board");
+  if (!p || !b) return;
+  const todos = [...T.times[0].campo, ...T.times[1].campo];
+  if (!todos.length) return;
+  const pts = todos.map(h => posPx(...h.pos));
+  const folga = 90;
+  const minX = Math.min(...pts.map(pt => pt.left)) - folga, maxX = Math.max(...pts.map(pt => pt.left)) + folga + 52;
+  const minY = Math.min(...pts.map(pt => pt.top)) - folga, maxY = Math.max(...pts.map(pt => pt.top)) + folga + 60;
+  p.scrollLeft = Math.max(0, Math.min(p.scrollWidth - p.clientWidth, b.offsetLeft + (minX + maxX) / 2 - p.clientWidth / 2));
+  p.scrollTop = Math.max(0, Math.min(p.scrollHeight - p.clientHeight, b.offsetTop + (minY + maxY) / 2 - p.clientHeight / 2));
+}
 function iniciaTutorial(arqKey) {
   construirMapa("tutorial");
   T = novoEstado();
@@ -927,6 +963,7 @@ function iniciaTutorial(arqKey) {
   selecionado = null; bancoSel = null; modoHabilidade = false; confirmacaoPendente = null;
   fecha();
   render();
+  centralizaPalcoTutorial();
   toast("Tutorial — mana já estocada, use a habilidade");
 }
 function telaConfigCpu() {
