@@ -684,6 +684,23 @@ function marcaEfeitoMorte(pos, t) { if (!simulando) EFEITOS.push({ tipo: "morte"
 let peer = null, conexao = null;   // PeerJS — só usados no modo "Jogar online"
 let aplicandoRemoto = false;   // true enquanto adota um T recebido pela rede; evita reenviar o que acabou de chegar
 let salaMapaEsc = null, salaRosterHost = null;   // mapa/elenco que o host escolheu, aguardando o elenco do guest chegar
+/* Sem servidor TURN, o PeerJS só consegue negociar a conexão direta
+   (WebRTC) quando os dois lados estão atrás de NAT "simples" — em rede
+   móvel, NAT simétrico ou dupla NAT (bem comum na prática) a negociação
+   trava pra sempre sem nenhum erro visível: os dois aparelhos entram na
+   sala, mas a conexão de verdade nunca abre. Servidor STUN sozinho não
+   resolve isso — precisa de um relay TURN de fallback. As credenciais do
+   Open Relay Project abaixo são públicas de propósito (projeto gratuito
+   pra exatamente esse uso), não são segredo nenhum. */
+const ICE_CONFIG = {
+  iceServers: [
+    { urls: "stun:stun.l.google.com:19302" },
+    { urls: "stun:stun1.l.google.com:19302" },
+    { urls: "turn:openrelay.metered.ca:80", username: "openrelayproject", credential: "openrelayproject" },
+    { urls: "turn:openrelay.metered.ca:443", username: "openrelayproject", credential: "openrelayproject" },
+    { urls: "turn:openrelay.metered.ca:443?transport=tcp", username: "openrelayproject", credential: "openrelayproject" },
+  ],
+};
 
 function idPorArquetipo(arqKey, roster = ROSTER1) { return roster.find(id => HERO_ARQ[id] === arqKey); }
 let _uidSeq = 1;
@@ -969,9 +986,9 @@ function iniciaTutorial(arqKey) {
 function telaConfigCpu() {
   let mapaEsc = "atual", difEsc = "normal", rosterEsc = "time1";
   const DIFICULDADES = {
-    normal: { nome: "Normal", desc: "Age por conta própria, sem grande estratégia — às vezes escolhe rotas ruins." },
-    dificil:{ nome: "Difícil", desc: "Prioriza abates certeiros, protege heróis frágeis e avança pelo caminho mais direto até a sua Base." },
-    jagerlaramais:{ nome: "🎖 Jager Laramais", desc: "Testa várias jogadas inteiras antes de agir e escolhe a que deixa o time em melhor posição. O adversário mais difícil do jogo." },
+    normal: { nome: "Normal", desc: "Prioriza abates certeiros, protege heróis frágeis e avança pelo caminho mais direto até a sua Base." },
+    dificil:{ nome: "Difícil", desc: "Testa várias jogadas inteiras antes de agir e escolhe a que deixa o time em melhor posição." },
+    jagerlaramais:{ nome: "🎖 Jager Laramais", desc: "Testa várias jogadas inteiras E antecipa a melhor resposta do adversário antes de escolher — não se expõe a contra-ataques. O adversário mais difícil do jogo." },
   };
   function desenha() {
     G("telacx").innerHTML = `<span class="et">Jogar contra a CPU</span><h2>Config da<br>partida</h2>
@@ -996,7 +1013,14 @@ function telaConfigCpu() {
     [...G("poolRoster").children].forEach(el => el.onclick = () => { rosterEsc = el.dataset.id; desenha(); });
     G("okConfigCpu").onclick = () => {
       construirMapa(mapaEsc);
-      T = novoEstado(ROSTERS[rosterEsc], rosterAleatorio()); T.cpu = true; T.cpuDificuldade = difEsc;
+      // sorteia de qual lado o jogador entra — sem isso ele sempre caía no
+      // AZUL e a CPU sempre no CARMIM, todo jogo
+      const meuTime = Math.random() < 0.5 ? 0 : 1;
+      const rosterJogador = ROSTERS[rosterEsc], rosterCpu = rosterAleatorio();
+      const rosterA = meuTime === 0 ? rosterJogador : rosterCpu;
+      const rosterB = meuTime === 0 ? rosterCpu : rosterJogador;
+      T = novoEstado(rosterA, rosterB);
+      T.cpu = true; T.cpuTime = 1 - meuTime; T.cpuDificuldade = difEsc;
       fecha(); iniciaPartida();
     };
   }
@@ -1117,7 +1141,7 @@ function iniciarHost(mapaEsc, rosterHost) {
   salaMapaEsc = mapaEsc; salaRosterHost = rosterHost;
   G("telacx").innerHTML = `<span class="et">Criando sala…</span><h2>Aguarde</h2><p>Conectando ao servidor de sinalização...</p>`;
   const codigo = gerarCodigoSala();
-  peer = new Peer("jagerlaramais-" + codigo);
+  peer = new Peer("jagerlaramais-" + codigo, { config: ICE_CONFIG });
   peer.on("open", () => {
     G("telacx").innerHTML = `<span class="et">Sala criada</span><h2>Código da sala</h2>
       <div class="codigoSala">${codigo}</div>
@@ -1161,15 +1185,26 @@ function telaEntrarSala() {
 }
 function iniciarGuest(codigo, rosterId) {
   G("telacx").innerHTML = `<span class="et">Conectando…</span><h2>Aguarde</h2><p>Entrando na sala ${codigo}...</p>`;
-  peer = new Peer();
+  peer = new Peer(undefined, { config: ICE_CONFIG });
+  // Sem TURN, quando os dois lados não conseguem achar rota direta a
+  // conexão nem dá erro — ela só fica "abrindo" pra sempre (ver ICE_CONFIG
+  // acima). Esse timeout garante que o jogador vê uma mensagem de erro em
+  // vez de ficar preso na tela de "Aguarde" indefinidamente.
+  let conectou = false;
+  const prazo = setTimeout(() => {
+    if (conectou) return;
+    encerraSalaOnline();
+    toast("Não foi possível conectar — verifique a internet dos dois aparelhos e tente de novo");
+    telaAbertura();
+  }, 15000);
   peer.on("open", () => {
     conexao = peer.connect("jagerlaramais-" + codigo, { reliable: true });
     conexao.on("data", aoReceberDados);
     conexao.on("close", () => toast("O outro jogador saiu da partida"));
-    conexao.on("open", () => { conexao.send({ tipo: "escolhaTime", rosterId }); });
-    conexao.on("error", () => { toast("Não foi possível conectar — confira o código"); telaAbertura(); });
+    conexao.on("open", () => { conectou = true; clearTimeout(prazo); conexao.send({ tipo: "escolhaTime", rosterId }); });
+    conexao.on("error", () => { clearTimeout(prazo); toast("Não foi possível conectar — confira o código"); telaAbertura(); });
   });
-  peer.on("error", () => { toast("Não foi possível conectar — confira o código e tente de novo"); telaAbertura(); });
+  peer.on("error", () => { clearTimeout(prazo); toast("Não foi possível conectar — confira o código e tente de novo"); telaAbertura(); });
 }
 
 /* ───────────────────────── Turno ───────────────────────── */
@@ -1822,28 +1857,10 @@ function render() {
   }
 }
 
-/* ───────────────────────── IA da CPU ─────────────────────────
-   Roda como o time T.cpuTime: invoca enquanto sobra Mana e o ponto de
-   nascimento está livre, depois age com cada herói em campo (ataca ou
-   cura se puder, senão anda em direção ao alvo mais próximo e tenta
-   agir de novo). */
+/* ───────────────────────── IA da CPU ───────────────────────── */
 function espera(ms) { return simulando ? Promise.resolve() : new Promise(res => setTimeout(res, ms)); }
 function alvoMaisFraco(lista) {
   return lista.reduce((pior, o) => (o.vida < pior.vida ? o : pior), lista[0]);
-}
-async function cpuInvoca(t, tm) {
-  let tentativas = 0;
-  while (tentativas < 4) {
-    tentativas++;
-    const acessiveis = tm.bench.filter(id => ARQUETIPOS[HERO_ARQ[id]].custo <= tm.mana);
-    if (!acessiveis.length) break;
-    const cels = casasDeInvocacao(t);
-    if (!cels.length) break;
-    const id = acessiveis[Math.floor(Math.random() * acessiveis.length)];
-    const [c, r] = cels[Math.floor(Math.random() * cels.length)];
-    invoca(id, c, r);
-    await espera(380);
-  }
 }
 async function cpuTentaAgir(h) {
   if (h.cura) {
@@ -1857,40 +1874,6 @@ async function cpuTentaAgir(h) {
   if (av.base !== null) { atacaBase(h, av.base); return true; }
   return false;
 }
-async function cpuAgeComHeroi(h) {
-  if (await cpuTentaAgir(h)) return;
-  let alvosPot;
-  if (h.cura) alvosPot = T.times[h.t].campo.filter(o => o !== h).map(o => o.pos);
-  else {
-    const inimigo = 1 - h.t;
-    alvosPot = [...T.times[inimigo].campo.map(o => o.pos), ...BASES[inimigo]];
-  }
-  const opcoes = alcanceMovimento(h);
-  if (!alvosPot.length || !opcoes.length) return;
-  const distAlvo = pos => Math.min(...alvosPot.map(a => dist(pos, a)));
-  // prefere terminar já dentro do próprio alcance de ataque/cura, senão
-  // só se aproxima o máximo possível — sem restrição de distância pra
-  // manter a ação, então pode aproveitar o movimento total.
-  const dentroDoAlcance = opcoes.filter(([c, r]) => distAlvo([c, r]) <= h.alc);
-  const pool = dentroDoAlcance.length ? dentroDoAlcance : opcoes;
-  let melhor = pool[0], melhorD = distAlvo(melhor);
-  for (const p of pool) { const d = distAlvo(p); if (d < melhorD) { melhor = p; melhorD = d; } }
-  move(h, melhor[0], melhor[1]);
-  await espera(300);
-  if (!h.atacou) await cpuTentaAgir(h);
-}
-async function jogaCpuNormal(t) {
-  const tm = T.times[t];
-  await cpuInvoca(t, tm);
-  const ordem = [...tm.campo];
-  for (const h of ordem) {
-    if (!tm.campo.includes(h) || T.fim !== null) continue;
-    await cpuAgeComHeroi(h);
-    render();
-    await espera(300);
-  }
-}
-
 /* ───────────────────────── IA da CPU — Difícil ─────────────────────────
    Mesmas regras do jogo, mas com 3 diferenças: (1) usa distância REAL de
    caminho (contornando rochas e outras peças) em vez da distância em
@@ -2366,13 +2349,102 @@ async function jogaCpuJagerLaramais(t) {
   await replayLogReal(t, melhor.log, mapaSimParaReal);
 }
 
+/* ───────────────────────── IA da CPU — Jager Laramais (nova, "suprema") ─────────────────────────
+   A Jager Laramais antiga (agora rodando como Difícil, ver jogaCpu())
+   só otimizava o PRÓPRIO turno — nunca olhava o que sobrava pro
+   adversário responder. Essa aqui vai um lance adiante: pega os
+   melhores turnos completos que a busca em feixe encontrou pra ela
+   mesma e, só pros mais promissores (testar todos ficaria lento sem
+   ganhar nada), simula a MELHOR resposta que o adversário conseguiria
+   dar no turno seguinte — com a mesma busca em feixe, só que rodando
+   do lado dele — antes de decidir qual dos dois jogar de verdade. Isso
+   evita a armadilha clássica da IA "gananciosa": abrir uma posição que
+   parece ótima agora mas devolve um contra-ataque decisivo. Continua só
+   enxergando o que já está visível no tabuleiro, nunca a mão do
+   adversário. */
+async function candidatosTurnoCompleto(t, real, largura, maxPlanos = Infinity) {
+  const planosInv = gerarPlanosInvocacao(t, real).slice(0, maxPlanos);
+  const candidatos = [];
+  for (const invPlano of planosInv) {
+    T = structuredClone(real);
+    const uidsInvocados = invPlano.map(({ id, c, r }) => { invoca(id, c, r); const oc = ocupante(c, r); return oc ? oc._uid : null; });
+    const ramos = beamSearchAcoes(t, largura);
+    for (const ramo of ramos) candidatos.push({ invPlano, uidsInvocados, log: ramo.log, score: ramo.score });
+  }
+  return candidatos.sort((a, b) => b.score - a.score);
+}
+/* Reexecuta um candidato (plano de invocação + log de ações) sobre uma
+   cópia de `real`, com a mesma tradução de _uid da simulação pro estado
+   reexecutado que o replay de verdade usa (ver replayLogReal) — precisa
+   dela porque invoca() sempre gera um _uid novo a cada clone, então o
+   _uid gravado no log da 1ª simulação não bate com o do 2º clone. */
+async function reconstroiEstado(real, t, candidato) {
+  T = structuredClone(real);
+  const mapa = new Map();
+  candidato.invPlano.forEach(({ id, c, r }, i) => {
+    invoca(id, c, r);
+    const oc = ocupante(c, r);
+    if (oc && candidato.uidsInvocados[i] != null) mapa.set(candidato.uidsInvocados[i], oc._uid);
+  });
+  await replayLogReal(t, candidato.log, mapa);
+  return T;
+}
+/* Turno inteiro que o adversário jogaria em resposta a `estadoAposMeuTurno`
+   (passagem de turno real — Mana, Exausto, Atordoado, pontos de invocação
+   — via iniciaTurno(), depois a mesma busca em feixe que a IA usa pra si
+   mesma) — devolve a pontuação do resultado do PONTO DE VISTA de `t`
+   (o meu time, não o do adversário). */
+async function melhorRespostaInimiga(estadoAposMeuTurno, t) {
+  const inimigo = 1 - t;
+  T = structuredClone(estadoAposMeuTurno);
+  T.vez = inimigo;
+  iniciaTurno();
+  const antesDaResposta = T;
+  // largura e nº de planos de invocação bem mais enxutos que a busca
+  // "principal" — é uma checagem de sanidade ("essa jogada minha abre
+  // uma resposta desastrosa?"), não uma segunda IA completa; testar
+  // fundo demais aqui deixaria cada turno da CPU lento pra valer.
+  const candidatosInimigo = await candidatosTurnoCompleto(inimigo, antesDaResposta, 2, 2);
+  if (!candidatosInimigo.length) return avaliarEstado(antesDaResposta, t);
+  const estadoFinal = await reconstroiEstado(antesDaResposta, inimigo, candidatosInimigo[0]);
+  return avaliarEstado(estadoFinal, t);
+}
+async function jogaCpuJagerLaramaisSuprema(t) {
+  const real = T;
+  simulando = true;
+  const candidatos = await candidatosTurnoCompleto(t, real, 5);
+  let melhor = null, melhorScore = -Infinity;
+  for (const cand of candidatos.slice(0, 3)) {
+    const estadoFinal = await reconstroiEstado(real, t, cand);
+    const scoreProfundo = estadoFinal.fim !== null ? avaliarEstado(estadoFinal, t) : await melhorRespostaInimiga(estadoFinal, t);
+    if (scoreProfundo > melhorScore) { melhorScore = scoreProfundo; melhor = cand; }
+  }
+  T = real;
+  simulando = false;
+  if (!melhor) return;
+
+  const mapaSimParaReal = new Map();
+  for (let i = 0; i < melhor.invPlano.length; i++) {
+    const { id, c, r } = melhor.invPlano[i];
+    invoca(id, c, r);
+    await espera(380);
+    const real2 = ocupante(c, r);
+    if (real2 && melhor.uidsInvocados[i] != null) mapaSimParaReal.set(melhor.uidsInvocados[i], real2._uid);
+  }
+  await replayLogReal(t, melhor.log, mapaSimParaReal);
+}
+
+/* Dificuldades em ordem crescente — cada uma reaproveita a IA que antes
+   pertencia à de cima: Normal ganhou a heurística que era da Difícil,
+   Difícil ganhou a busca em feixe que era da Jager Laramais, e a Jager
+   Laramais agora é a "suprema" acima, com antecipação de resposta. */
 async function jogaCpu() {
   const t = T.vez;
   if (!T || T.fim !== null || t !== T.cpuTime) return;
   await espera(500);
-  if (T.cpuDificuldade === "jagerlaramais") await jogaCpuJagerLaramais(t);
-  else if (T.cpuDificuldade === "dificil") await jogaCpuDificil(t);
-  else await jogaCpuNormal(t);
+  if (T.cpuDificuldade === "jagerlaramais") await jogaCpuJagerLaramaisSuprema(t);
+  else if (T.cpuDificuldade === "dificil") await jogaCpuJagerLaramais(t);
+  else await jogaCpuDificil(t);
   await espera(400);
   if (T.fim === null) encerraTurno();
 }
